@@ -58,8 +58,111 @@ _WEB_TOOLS: tuple[str, ...] = (
     "astr_kb_search",
 )
 
+# Markers used to discover web/search/extract tools provided by third-party
+# plugins (e.g. astrbot_plugin_web_searcher_pro registers searxng_* tools),
+# which are not part of AstrBot's built-in web tool set.
+_WEB_READ_MARKERS: tuple[str, ...] = (
+    "search",
+    "fetch",
+    "extract",
+    "searxng",
+    "web",
+    "github_search",
+    "ddg",
+    "duckduckgo",
+    "serp",
+    "crawl",
+    "knowledge",
+    "query",
+)
+# Substrings of names of side-effecting tools that must never leak into a
+# read-only subagent even if they match a web marker.
+_SIDE_EFFECT_MARKERS: tuple[str, ...] = (
+    "write",
+    "edit",
+    "delete",
+    "remove",
+    "upload",
+    "download",
+    "exec",
+    "shell",
+    "python",
+    "terminal",
+    "install",
+    "commit",
+    "push",
+    "deploy",
+    "set_",
+    "create_",
+    "mkdir",
+    "move",
+    "rename",
+    "send_",
+    "kill",
+    "reboot",
+    "approve",
+    "submit",
+    "background",
+)
+# Tools that must never be discovered into a subagent's toolset (delegation
+# loops, agent control, the plugin's own subagent entry points, read_skill...).
+_SKIP_DISCOVERY_TOOLS: frozenset[str] = frozenset(
+    (
+        "explore",
+        "research",
+        "review",
+        "security_review",
+        "reasonix_git_read",
+        "run_skill",
+        "read_only_skill",
+        "read_skill",
+        "use_capability",
+    )
+)
+
+
+def _is_web_readonly_tool(tool: FunctionTool) -> bool:
+    """True for an active tool that looks like a read-only web/search/extract tool.
+
+    Third-party search plugins register tools under arbitrary names (e.g.
+    searxng_web_search_general). We detect them by name/description markers and
+    exclude anything that looks side-effecting. Best-effort heuristic: if a
+    plugin tool is not detected, add its exact name to the subagent's
+    ``allowed_tools`` (e.g. ``_WEB_TOOLS``) instead.
+
+    Args:
+        tool: The candidate tool.
+
+    Returns:
+        Whether the tool is safe to expose to a read-only research sub-agent.
+    """
+    if not bool(getattr(tool, "active", True)):
+        return False
+    name = (tool.name or "").lower().strip()
+    if not name or name in _SKIP_DISCOVERY_TOOLS or name.startswith("transfer_to_"):
+        return False
+    if any(marker in name for marker in _SIDE_EFFECT_MARKERS):
+        return False
+    if any(marker in name for marker in _WEB_READ_MARKERS):
+        return True
+    description = (tool.description or "").lower()
+    return any(
+        phrase in description
+        for phrase in (
+            "search",
+            "fetch",
+            "extract",
+            "web page",
+            "webpage",
+            "scrape",
+            "read a url",
+        )
+    )
+
+
 _MAX_GIT_OUTPUT = 60_000  # Characters.
 _MAX_GIT_TIMEOUT_SECONDS = 60
+_MAX_PASTED_DIFF_CHARS = 40_000  # Characters.
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +224,9 @@ How to operate:
   against external standards.
 - Cap yourself at ~12 tool calls. If you cannot converge, return what you have plus a note on
   what is missing.
+- If a web tool reports it is not configured (e.g. "API key not configured"), do NOT retry the
+  other web tools; state that live web verification is unavailable and proceed with local code
+  + existing knowledge, clearly labeling anything you could not verify live.
 
 Your final answer:
 - One paragraph (or short bullets). Lead with the conclusion.
@@ -142,8 +248,9 @@ ship and produce a focused review the parent can hand back.
 
 How to operate:
 - Discover and read the change with the read-only git tool: subcommand `status` / `diff`
-  (optionally `diff <base>...HEAD`, add `--stat`) on a repo_path inside the workspace. If no git
-  repo is reachable, report back that you need a repo path or a pasted diff.
+  (optionally `diff <base>...HEAD`, add `--stat`) on a repo_path inside the workspace. If a
+  "Parent-provided diff" block is present in the task, review exactly that diff; do NOT require
+  git. Otherwise, if no git repo is reachable, report back that you need a repo path or a diff.
 - Read touched files with the file-read tool when the diff lacks context.
 - For "any callers depending on this?" questions: grep the symbol BEFORE asserting impact.
 - Stay read-only. Never commit, never write files, never propose edits as applied changes.
@@ -178,7 +285,8 @@ to ship through a security lens specifically, and report exploitable issues.
 
 How to operate:
 - Default scope: the current branch's diff vs the default branch. Honor a named range or
-  directory if given.
+  directory if given. If a "Parent-provided diff" block is present in the task, review exactly
+  that diff; do NOT require git.
 - Discover scope first with the read-only git tool: `status`, `diff --stat`, `diff <base>...HEAD`.
   Read touched files (file-read tool) when the diff lacks security context - auth checks, input
   validation, the handler that calls the changed code.
@@ -377,6 +485,36 @@ def _task_parameters(task_hint: str) -> dict:
     }
 
 
+def _review_parameters(task_hint: str) -> dict:
+    """Schema for review/security_review: task plus optional diff / repo_path carriers."""
+    return {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": task_hint,
+            },
+            "diff": {
+                "type": "string",
+                "description": (
+                    "Optional: paste the full diff text to review when the git repo is not "
+                    "reachable from the bot's environment (e.g. sandbox vs host mismatch). The "
+                    "sub-agent reviews exactly this diff and does not require git."
+                ),
+            },
+            "repo_path": {
+                "type": "string",
+                "description": (
+                    "Optional: absolute or workspace-relative path of the target git repository "
+                    "inside the session workspace. The sub-agent passes it to the read-only git "
+                    "tool. Ignored when a diff is provided."
+                ),
+            },
+        },
+        "required": ["task"],
+    }
+
+
 @dataclass
 class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
     """A subagent exposed as a tool: runs an isolated read-only agent loop."""
@@ -385,6 +523,10 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
     max_steps: int = 8
     allowed_tools: tuple[str, ...] = ()
     extra_tools: tuple[FunctionTool, ...] = ()
+    # When true, also discover any active read-only web/search/extract tool that
+    # other plugins registered (e.g. searxng_*), so research works without a
+    # built-in AstrBot web-search provider.
+    discover_web_readonly: bool = False
 
     def _build_toolset(self, tool_mgr: Any) -> ToolSet:
         toolset = ToolSet()
@@ -397,6 +539,10 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
                 toolset.add_tool(tool)
         for instance in self.extra_tools:
             toolset.add_tool(instance)
+        if self.discover_web_readonly and tool_mgr is not None:
+            for tool in getattr(tool_mgr, "func_list", ()):
+                if _is_web_readonly_tool(tool):
+                    toolset.add_tool(tool)
         return toolset
 
     async def call(
@@ -405,6 +551,24 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
         task = str(kwargs.get("task") or "").strip()
         if not task:
             return "error: this subagent needs a non-empty 'task' describing the concrete question."
+
+        # Optional review carriers: a pasted diff and/or an explicit repo path decouple
+        # review/security_review from "a git repo must be reachable at the workspace root"
+        # (e.g. host vs. sandbox environment mismatch). Harmless for other subagents.
+        pasted_diff = str(kwargs.get("diff") or "").strip()
+        repo_path = str(kwargs.get("repo_path") or "").strip()
+        if pasted_diff:
+            if len(pasted_diff) > _MAX_PASTED_DIFF_CHARS:
+                pasted_diff = pasted_diff[:_MAX_PASTED_DIFF_CHARS] + "\n...[truncated]"
+            task = (
+                f"{task}\n\nParent-provided diff to review (no git repo needed - review "
+                f"exactly this diff):\n```diff\n{pasted_diff}\n```"
+            )
+        if repo_path:
+            task = (
+                f"{task}\n\nTarget git repository path (pass this repo_path to the "
+                f"read-only git tool): {repo_path}"
+            )
 
         agent_context: AstrAgentContext = context.context
         ctx = agent_context.context
@@ -483,6 +647,7 @@ class ResearchTool(ReasonixSubagentTool):
     max_steps: int = 12
     allowed_tools: tuple[str, ...] = (*_CODE_READ_TOOLS, *_WEB_TOOLS)
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
+    discover_web_readonly: bool = True
 
 
 @dataclass
@@ -498,10 +663,11 @@ class ReviewTool(ReasonixSubagentTool):
         "a PR-shaped change or after finishing a multi-step edit."
     )
     parameters: dict = Field(
-        default_factory=lambda: _task_parameters(
+        default_factory=lambda: _review_parameters(
             "What to focus the review on (e.g. 'focus on the auth changes' or 'general'). "
-            "Optionally include the repo_path if the target git repo differs from the workspace "
-            "root. The sub-agent reads the diff itself with read-only git."
+            "Provide 'diff' to review a pasted diff, or 'repo_path' to point at a git repo "
+            "inside the workspace. If neither is given the sub-agent reads the workspace "
+            "repo's pending changes itself with read-only git."
         )
     )
     system_prompt: str = REVIEW_SYSTEM_PROMPT
@@ -522,10 +688,11 @@ class SecurityReviewTool(ReasonixSubagentTool):
         "shipping changes that touch auth, input parsing, file IO, or external requests."
     )
     parameters: dict = Field(
-        default_factory=lambda: _task_parameters(
+        default_factory=lambda: _review_parameters(
             "Optional scope hint (e.g. 'focus on token handling in internal/auth/') or 'full' "
-            "for everything in the diff. Optionally include the repo_path if the target git repo "
-            "differs from the workspace root."
+            "for everything in the diff. Provide 'diff' to review a pasted diff, or 'repo_path' "
+            "to point at a git repo inside the workspace. If neither is given the sub-agent "
+            "reads the workspace repo's pending changes itself with read-only git."
         )
     )
     system_prompt: str = SECURITY_REVIEW_SYSTEM_PROMPT

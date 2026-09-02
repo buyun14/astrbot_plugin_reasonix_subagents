@@ -44,7 +44,7 @@
 - **review / security-review 需要 git 仓库**：把仓库放进 AstrBot 会话 workspace
   （或通过 `reasonix_git_read(repo_path=...)` 显式给路径；路径必须落在 workspace 内）。
   若仓库不可达，子代理会要求父代理提供 diff 文本。
-- **research 需要已配置的 web 搜索工具**（如 tavily/bocha/brave/firecrawl/exa/anysearch）。
+- **research 需要可用的 web 搜索工具**：可以是 AstrBot 内置搜索（tavily/bocha/brave/firecrawl/exa/anysearch，需配置 key），也可以是**任意第三方插件注册的只读搜索/抓取工具**——research 会运行时自动发现（如 `astrbot_plugin_web_searcher_pro` 的 `searxng_*` 工具），无需改代码。若某插件的工具名/描述既不带 search/fetch/extract/searxng 等特征、也没被安全排除规则放过，可在 `main.py` 的 `_WEB_TOOLS` 里显式加入其工具名。
 - 只读是靠“只给读工具”实现（AstrBot 没有只读子代理注册表）；请勿把这些子代理工具集里加入写工具。
 - 子代理是同步执行（会占用主循环直到返回）；`max_steps` 已调小（review 系 8 步）。
 
@@ -101,3 +101,19 @@ SOFTWARE.
 ```
 
 本插件自身代码与文档采用 **MIT 许可**（见仓库 `LICENSE` 文件）。Reasonix 提示词部分的版权声明已保留于上文。
+
+## 实测反馈与已知短板应对（2026-09-02，Linux 主机 / QQ 渠道）
+
+4 个子代理已在真实 AstrBot（Linux / QQ）上逐个验收通过（research / explore / review /
+security_review）。实测暴露的短板与本次应对：
+
+| 短板 | 性质 | 应对 |
+| --- | --- | --- |
+| research 无法 live 联网核验 | 环境配置（未配 web 搜索 key） | **配置侧**：配置任一 web 搜索渠道——AstrBot 内置服务商 key，或直接用插件搜索（如 `web_searcher_pro`）。**代码侧**：遇到 "API key not configured" 不再逐个重试其它 web 工具；并自动发现只读插件搜索/抓取工具（如 `searxng_*`）纳入 research 工具集。 |
+| review / security_review 强依赖 git diff、宿主/沙箱环境错位 | 载体/环境 | **代码侧**：二者新增 `diff`（直接粘贴 diff 文本审查，无需 git）与 `repo_path`（指定 workspace 内仓库路径）入参；提示词会识别 "Parent-provided diff" 后不再要求 git。 |
+| explore / review 读不到"另一环境"的文件 | 架构（宿主 vs 沙箱） | 子代理跑在 AstrBot 宿主侧；要审沙箱文件请把文件/diff 带出来，或把仓库放进宿主会话 workspace 后再用 `repo_path` 指定。 |
+| ops_reviewer | 非本插件 | 不在本插件范围内，忽略。 |
+
+注意：review/security_review 默认审查的是**宿主会话 workspace**（实测环境里即 AstrBot 安装目录）里
+git 仓库的未提交改动。若你只想审自己项目的改动，请把目标仓库放进 workspace 并用 `repo_path`
+指定，或直接传 `diff`。
