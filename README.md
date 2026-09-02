@@ -1,0 +1,103 @@
+# astrbot_plugin_reasonix_subagents
+
+把 **DeepSeek-Reasonix** 的 4 个内置只读子代理（`explore` / `research` / `review` / `security-review`）
+迁移到 AstrBot，采用官方推荐的 **agent-as-tool** 模式（`FunctionTool` + `tool_loop_agent`）。
+
+设计参考：
+- 提示词：`DeepSeek-Reasonix/internal/skill/builtins.go`（explore / research / review / security-review body）
+- AstrBot 多 Agent 示例：`docs/dev/star/guides/ai.md`（中文：`docs/zh/dev/star/guides/ai.md`）
+- 本地迁移资产文档（可选阅读）：
+  `E:\ProjectCollection\AI_sandbox\docs_person\DeepSeek-Reasonix子代理迁移资产\`
+
+## 它提供了什么
+
+注册到主 LLM 的 4 个“委派工具”（agent-as-tool）：
+
+| 工具 | 作用 | 只读工具集 |
+| --- | --- | --- |
+| `explore` | 只读代码库调查，返回一条蒸馏结论 | file-read / grep / 只读 shell / 只读 git |
+| `research` | 代码 + 网页交叉研究 | 上 + 已配置的 web 搜索/extract |
+| `review` | 对 workspace 内 git 仓库改动做代码评审 | file-read / grep / 只读 git / 只读 shell |
+| `security-review` | 安全视角评审（威胁模型分级） | 同 review |
+
+外加一个**只读 git 工具** `reasonix_git_read`（白名单子命令：`status diff log show blame ls-files rev-parse branch remote describe shortlog tag`；禁止写子命令；输出截断；`repo_path` 默认限制在会话 workspace 内）。
+
+每个子代理调用时都在**新建的独立上下文**里跑 `tool_loop_agent`（不携带父对话历史，只带自身系统提示词 + 只读工具集），完成后**只把最终文本**回给主 LLM——对应 Reasonix 的“隔离子会话 + 只回最终答案”。
+
+## 安装 / 启用
+
+1. 把本目录放入 `data/plugins/astrbot_plugin_reasonix_subagents/`。
+2. WebUI 重载插件。
+3. 确保当前会话人格能挂载这些工具：
+   - 若人格工具列表为“全部工具”，自动生效；
+   - 若人格指定了工具白名单，需把 `explore research review security_review` 加进去。
+4. 让主 LLM 委派即可，例如：
+   - “explore 一下 `astrbot/core/star/context.py` 里 tool_loop_agent 的实现”
+   - “review 当前 workspace 仓库的改动”
+   - “security-review 一下最近改的鉴权代码”
+
+## 前置条件与限制
+
+- **explore / review 的代码读取**依赖 Computer Use 的文件/grep/shell 工具：
+  在 WebUI → 模型提供商 → 开启 Computer Use（`computer_use_runtime` = local/sandbox），
+  否则子代理只会拿到 `reasonix_git_read`，读取类任务无法完成（子代理会明确回报）。
+- **review / security-review 需要 git 仓库**：把仓库放进 AstrBot 会话 workspace
+  （或通过 `reasonix_git_read(repo_path=...)` 显式给路径；路径必须落在 workspace 内）。
+  若仓库不可达，子代理会要求父代理提供 diff 文本。
+- **research 需要已配置的 web 搜索工具**（如 tavily/bocha/brave/firecrawl/exa/anysearch）。
+- 只读是靠“只给读工具”实现（AstrBot 没有只读子代理注册表）；请勿把这些子代理工具集里加入写工具。
+- 子代理是同步执行（会占用主循环直到返回）；`max_steps` 已调小（review 系 8 步）。
+
+## 开发 / 自检
+
+```bash
+# 语法检查
+uv run python -m py_compile data/plugins/astrbot_plugin_reasonix_subagents/main.py
+# 格式与 lint（如已安装 ruff）
+uv run ruff check data/plugins/astrbot_plugin_reasonix_subagents
+uv run ruff format data/plugins/astrbot_plugin_reasonix_subagents
+```
+
+## 发布到插件市场（检查清单）
+
+发布入口：[AstrBot 插件发布页面](https://cloud.astrbot.app/publish)（需注册 AstrBot Cloud），或维护自定义插件源。
+发布前请逐项确认：
+
+- [ ] 把本目录放进**独立 GitHub 仓库**（建议命名为 `astrbot_plugin_reasonix_subagents`，metadata.yaml 在仓库根目录）。
+- [ ] `metadata.yaml`：把 `author` 改为你的发布者名/GitHub 用户名，把 `repo` 填为真实 HTTPS 仓库地址（仓库地址用于更新，缺失将无法更新）。
+- [ ] 压缩包 ≤ 16MB；不要把 `.git/`、`__pycache__/`、`.venv/`、`.ruff_cache/` 等提交进仓库（见 `.gitignore`）。
+- [ ] （可选）添加 `logo.png`（1:1，256x256）；补充 `social_link`。
+- [ ] 仅用 AstrBot 自带依赖（pydantic 等），无需 `requirements.txt`；若以后引入第三方库需补 `requirements.txt`。
+- [ ] 改动遵循 [插件发布规范](https://docs.astrbot.app/zh/dev/star/plugin-publish) 与 `docs/zh/dev/star/plugin-new.md`。
+
+### 来源与许可（合规声明）
+
+本插件移植了 [DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) 的 4 个内置只读子代理提示词
+（`internal/skill/builtins.go` 中的 explore / research / review / security-review body）及只读纪律设计。
+DeepSeek-Reasonix 采用 **MIT License**，按协议要求保留如下版权声明：
+
+```text
+MIT License
+
+Copyright (c) 2026 Reasonix Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+本插件自身代码与文档采用 **MIT 许可**（见仓库 `LICENSE` 文件）。Reasonix 提示词部分的版权声明已保留于上文。

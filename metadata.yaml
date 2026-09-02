@@ -1,0 +1,38 @@
+name: astrbot_plugin_reasonix_subagents
+display_name: Reasonix 子代理（迁移）
+short_desc: 迁移自 DeepSeek-Reasonix 的 explore / research / review / security-review 只读子代理（agent-as-tool）
+desc: |
+  把 DeepSeek-Reasonix 的 4 个内置只读子代理（explore / research / review / security-review）
+  以 "agent-as-tool"（FunctionTool + tool_loop_agent）方式迁移到 AstrBot。
+
+  - explore：只读代码库调查，广撒网后返回一条带 file:line 引用的蒸馏结论。
+  - research：代码 + 网页交叉研究（需要已配置的 web 搜索工具）。
+  - review：对工作区内 git 仓库的改动做只读代码评审，返回
+    verdict / blocking_findings / non_blocking / required_changes。
+  - security-review：安全视角评审（注入/鉴权/密钥/反序列化/路径穿越/密码学），按严重度分级。
+
+  实现要点：
+  - 每个子代理是一个 FunctionTool，description 面向主 LLM 的 handoff 决策；
+    调用时在独立上下文跑 tool_loop_agent，只把最终文本回给主代理。
+  - 子代理的工具集是"只读最小集"：文件读、grep、只读 shell、只读 git 与网页搜索，
+    不包含任何写工具。
+  - 另注册 reasonix_git_read（只读 git：status/diff/log/show/blame/ls-files 等白名单）。
+
+  使用：
+  1) 把插件目录放进 data/plugins/ 并重载；
+  2) 当前会话人格的工具列表保持"全部工具"（tools=None），或手动把
+     explore / research / review / security_review 加入人格工具白名单；
+  3) explore/review 依赖 Computer Use 的文件/grep/shell 工具；review/security-review
+     还需要把目标 git 仓库放进 AstrBot 会话 workspace（或用 reasonix_git_read 指定仓库路径）。
+  4) 对话中让主 LLM 委派即可，或直接说"explore 一下 xxx 的实现"。
+version: 0.1.0
+author: buyun14
+repo: https://github.com/buyun14/astrbot_plugin_reasonix_subagents
+astrbot_version: ">=4.16,<5"
+tags:
+  - subagent
+  - agent
+  - code-review
+  - security
+  - llm
+  - reasonix
