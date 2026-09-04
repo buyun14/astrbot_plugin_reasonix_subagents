@@ -12,6 +12,11 @@ This plugin ports the four built-in read-only subagents of DeepSeek-Reasonix
 * The subagent toolset is deliberately read-only: file-read / grep / read-only
   shell / read-only git / web search. No writer tools are ever included.
 * A ``reasonix_git_read`` read-only git tool backs review / security-review.
+* ``deep_review`` runs several specialist reviewers in parallel, then a merge
+  step gates the result by confidence (adapted from Anthropic's
+  claude-plugins-official ``code-review`` + ``pr-review-toolkit``; the
+  security checklist in ``security_review`` is adapted from
+  ``security-guidance``). Apache-2.0 content, reused with attribution.
 
 Reference prompts:
     DeepSeek-Reasonix/internal/skill/builtins.go (explore/research/review/
@@ -112,6 +117,7 @@ _SKIP_DISCOVERY_TOOLS: frozenset[str] = frozenset(
         "research",
         "review",
         "security_review",
+        "deep_review",
         "reasonix_git_read",
         "run_skill",
         "read_only_skill",
@@ -177,6 +183,27 @@ _TUI_FORMATTING = (
     "Keep the final answer compact and terminal-friendly: short paragraphs or "
     "bullets, no walls of text, no restating the question."
 )
+
+# Dangerous-API checklist distilled from Anthropic's claude-plugins-official
+# ``security-guidance/hooks/patterns.py`` (25 pattern rules). Folded into the
+# security-review prompt as an explicit scan list.
+_SECURITY_PATTERN_CHECKLIST = """\
+- eval() / new Function() / document.write() / innerHTML / outerHTML /
+  insertAdjacentHTML / dangerouslySetInnerHTML fed with untrusted input (XSS /
+  code injection).
+- child_process.exec / execSync / os.system / subprocess(shell=True) / go exec
+  through a shell - prefer argument arrays / shell=False; flag interpolated
+  untrusted input.
+- deserialization: pickle / marshal.loads / shelve / torch.load
+  (weights_only=False) / unsafe yaml.load of untrusted data.
+- crypto: homemade crypto, MD5/SHA-1 for passwords, AES-ECB, missing IV/nonce,
+  TLS certificate verification disabled.
+- XML: parsing untrusted XML without hardening (XXE) via xml.etree / lxml.
+- GitHub Actions / CI workflow: interpolating issue/PR/event fields into run:
+  or ref: (command / ref injection).
+- script/link tags without SRI / subresource integrity.
+Flag each construct only where it can be reached by untrusted input or weakens
+a security control."""
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +332,10 @@ cookie flags (Secure/HttpOnly/SameSite).
 
 Out of scope here (regular review covers them): style, naming, performance, non-security test
 gaps, "extract this helper".
+
+Additional dangerous-API scan: actively grep the touched code for these constructs and flag
+any that handle untrusted input or disable checks:
+{_SECURITY_PATTERN_CHECKLIST}
 
 Your final answer:
 - Lead with a one-sentence verdict: "no security issues found", "minor concerns", or
@@ -708,12 +739,302 @@ SECURITY_REVIEW_TOOL = SecurityReviewTool()
 
 
 # --------------------------------------------------------------------------- #
+# Deep review: parallel specialist reviewers + confidence gating.
+# Adapted from Anthropic's claude-plugins-official plugins:
+#   - code-review: independent reviewers + 0-100 confidence rubric, drop < 80.
+#   - pr-review-toolkit: specialist reviewer personas (bugs, guidelines,
+#     silent failures, tests, comments/types).
+# The per-issue scorer agents are folded into one merge/arbiter step to keep
+# the tool call budget bounded.
+# --------------------------------------------------------------------------- #
+_MAX_PARALLEL_REVIEWERS = 3
+_MAX_REVIEWER_STEPS = 8
+_MAX_AGGREGATOR_STEPS = 4
+
+_REVIEWER_OPERATION = """\
+How to operate (read-only):
+- Review exactly the "Parent-provided diff" in the task if present; otherwise use the read-only
+  git tool to read the change. You may read files with the file-read/grep tools for context.
+- Do not run builds, tests, typecheckers or linters - assume CI does that separately.
+- Do not write, edit, commit, or call any review/deep-review tools.
+- Cap your tool calls at ~10. Focus on real, high-signal issues; skip nits and likely false
+  positives.
+"""
+
+_REVIEWER_OUTPUT_RULES = """\
+Output each candidate issue in this exact structure (Markdown bullets), one per issue:
+- confidence: <0-100 (75+ = very likely real; >=80 = reportable)>
+- location: <file:line range>
+- issue: <one-line description>
+- why: <evidence from the code or git history; for guideline claims quote the rule file>
+
+If you find no real candidate issues, output exactly: NO_ISSUES
+Do not restate the diff or paste whole files.
+"""
+
+_REVIEWER_BUGS = f"""\
+You are specialist reviewer #1 (correctness & behavior) in a parallel code-review team.
+
+Mission: shallow-scan the change for real bugs and hidden behavior changes only:
+- off-by-one, wrong operator/condition, None/null handling, races, unhandled edge cases.
+- behavior the diff hides: renames missing callers, removed load-bearing branches, error
+  handling that now swallows what used to surface.
+Ignore style, tests and security (other specialists cover them) and pre-existing issues.
+{_REVIEWER_OPERATION}
+{_REVIEWER_OUTPUT_RULES}
+"""
+
+_REVIEWER_GUIDELINES = f"""\
+You are specialist reviewer #2 (guidelines & code quality) in a parallel code-review team.
+
+Mission: check the change against the repo's explicit guidance and quality bar:
+- Read AGENTS.md / README / conventions files if present in the workspace; flag deviations
+  that matter (import patterns, error-handling/logging, naming, architecture, platform
+  compatibility).
+- Code quality: significant duplication, missing critical error handling, dead code introduced.
+Ignore cosmetic nits and anything a linter would catch. Style only if a rule file says so.
+{_REVIEWER_OPERATION}
+{_REVIEWER_OUTPUT_RULES}
+"""
+
+_REVIEWER_SILENT_FAILURES = f"""\
+You are specialist reviewer #3 (error handling) in a parallel code-review team.
+
+Mission: hunt silent failures and poor error handling introduced or touched by the change:
+- empty catch blocks; broad exception catching that hides unrelated errors.
+- catch/log-and-continue that swallows failures; returning default/None on error without logging.
+- fallbacks that mask the real problem, or fall back to a mock/stub in production.
+- optional chaining / null-coalescing that silently skips operations that can fail.
+- user-facing error messages that are generic, unactionable, or leak internals.
+Flag each with where the error is hidden and what a user would experience.
+{_REVIEWER_OPERATION}
+{_REVIEWER_OUTPUT_RULES}
+"""
+
+_REVIEWER_TESTS = f"""\
+You are specialist reviewer #4 (test coverage) in a parallel code-review team.
+
+Mission: assess whether the change is adequately tested (behavioral, not line coverage):
+- Is the new behavior covered? Edge cases, boundary conditions, and negative tests for any
+  new validation/parsing.
+- Are error paths / failure branches tested?
+- Async/concurrency paths if the change touches them.
+Only report concrete gaps tied to the change; do not demand 100% coverage or nitpick.
+{_REVIEWER_OPERATION}
+{_REVIEWER_OUTPUT_RULES}
+"""
+
+_REVIEWER_COMMENTS_TYPES = f"""\
+You are specialist reviewer #5 (comments & types) in a parallel code-review team.
+
+Mission: inspect the change for documentation/type rot:
+- Comments/docstrings added or touched: do they accurately match the code (signatures,
+  behavior, edge cases)? Flag claims that are wrong or will rot.
+- Types/data models added or changed: are invariants explicit and encapsulated (illegal states
+  should be unrepresentable), preconditions/postconditions clear?
+Only flag issues that will bite maintainers; ignore nitpicks.
+{_REVIEWER_OPERATION}
+{_REVIEWER_OUTPUT_RULES}
+"""
+
+_DEEP_REVIEW_SPECIALISTS: tuple[tuple[str, str], ...] = (
+    ("correctness", _REVIEWER_BUGS),
+    ("guidelines", _REVIEWER_GUIDELINES),
+    ("silent-failures", _REVIEWER_SILENT_FAILURES),
+    ("tests", _REVIEWER_TESTS),
+    ("comments-types", _REVIEWER_COMMENTS_TYPES),
+)
+
+_CONFIDENCE_RUBRIC = """\
+Confidence rubric (apply verbatim):
+- 0: false positive - does not stand up to light scrutiny, or pre-existing.
+- 25: possibly real, unverified.
+- 50: verified real but low importance / rare / nitpick-ish.
+- 75: highly confident it is real and will be hit in practice; existing approach insufficient.
+- 100: certain - evidence directly confirms a real, frequent issue.
+"""
+
+_FALSE_POSITIVE_EXAMPLES = """\
+Likely false positives (drop unless strongly evidenced):
+- pre-existing issues (not introduced by the diff);
+- things that only *look* like bugs;
+- pedantic nits a senior engineer would not raise;
+- anything a linter/typechecker/compiler/CI would catch (imports, types, broken tests, formatting);
+- general quality complaints (coverage, docs) unless a repo rule explicitly requires it;
+- functional changes that are likely intentional or required by the broader change;
+- issues on lines the diff did not touch.
+"""
+
+_DEEP_REVIEW_AGGREGATOR_PROMPT = f"""\
+You are the aggregator of a parallel code review. Several independent specialist reviewers
+audited the same diff; each returned candidate issues tagged with a confidence score and evidence.
+
+Merge them into ONE high-signal review:
+1. Score every candidate with this rubric: {_CONFIDENCE_RUBRIC}
+2. Drop any issue scored below 80.
+3. Drop false positives: {_FALSE_POSITIVE_EXAMPLES}
+4. Deduplicate overlapping issues across reviewers - keep the most specific description and the
+   strongest evidence; merge issues that share a root cause.
+5. Re-rank survivors by severity; keep only issues that are real, actionable and worth the
+   author's time.
+
+Output exactly this structure (English):
+- verdict: <one line, e.g. "LGTM - no high-confidence issues" | "N high-confidence issues">
+- blocking_findings: <each: file:line - issue (1 sentence) - why it matters (1 sentence)>
+- non_blocking: <each: file:line - issue (1 sentence)>
+- required_changes: <concrete asks, optional>
+If nothing survives the filter, say so plainly; do not manufacture findings.
+"""
+
+
+@dataclass
+class DeepReviewTool(ReasonixSubagentTool):
+    """Run several specialist reviewers in parallel, then gate by confidence."""
+
+    name: str = "deep_review"
+    description: str = (
+        "Run a deeper read-only code review: several specialist reviewers (correctness, "
+        "guidelines, silent failures, tests, comments/types) audit the same diff in parallel, "
+        "then a merge step filters false positives by confidence (>=80) and returns one "
+        "structured report (verdict / blocking_findings / non_blocking / required_changes). "
+        "Slower and more thorough than `review` - use for large or risky changes, or when a "
+        "first review left many uncertain findings. Read-only; never edits."
+    )
+    parameters: dict = Field(
+        default_factory=lambda: _review_parameters(
+            "What to focus on, plus the same optional 'diff' / 'repo_path' carriers as review. "
+            "If neither a diff nor a reachable git repo is given the tool fails fast and asks "
+            "for one."
+        )
+    )
+    allowed_tools: tuple[str, ...] = _CODE_READ_TOOLS
+    extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
+    max_steps: int = _MAX_REVIEWER_STEPS
+
+    async def _run_agent(
+        self,
+        ctx: Any,
+        event: Any,
+        provider_id: str,
+        *,
+        system_prompt: str,
+        prompt: str,
+        tools: ToolSet | None,
+        max_steps: int,
+    ) -> str:
+        """Run one isolated agent loop and return its final text."""
+        llm_resp = await ctx.tool_loop_agent(
+            event=event,
+            chat_provider_id=provider_id,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tools=tools,
+            max_steps=max_steps,
+            tool_call_timeout=120,
+            stream=False,
+        )
+        return (getattr(llm_resp, "completion_text", None) or "").strip()
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
+    ) -> ToolExecResult:
+        task = str(kwargs.get("task") or "").strip()
+        if not task:
+            return "error: deep_review needs a non-empty 'task'."
+
+        agent_context: AstrAgentContext = context.context
+        ctx = agent_context.context
+        event = agent_context.event
+
+        try:
+            tool_mgr = ctx.get_llm_tool_manager()
+        except Exception:  # noqa: BLE001
+            tool_mgr = None
+        toolset = self._build_toolset(tool_mgr) if tool_mgr is not None else ToolSet()
+        if toolset.empty():
+            return (
+                "error: none of deep_review's read-only tools are available. Enable Computer "
+                "Use (computer_use_runtime) for code reading."
+            )
+
+        # Build ONE diff snapshot so all parallel reviewers share identical input
+        # instead of each hitting git concurrently.
+        pasted_diff = str(kwargs.get("diff") or "").strip()
+        repo_path = str(kwargs.get("repo_path") or "").strip()
+        diff_text = pasted_diff
+        if not diff_text:
+            git_result = await GIT_READ_TOOL.call(
+                context, subcommand="diff", repo_path=repo_path or None
+            )
+            if isinstance(
+                git_result, str
+            ) and not git_result.strip().lower().startswith("error:"):
+                diff_text = git_result
+        if len(diff_text) > _MAX_PASTED_DIFF_CHARS:
+            diff_text = diff_text[:_MAX_PASTED_DIFF_CHARS] + "\n...[truncated]"
+        if not diff_text:
+            return (
+                "error: deep_review needs a reachable git repo (workspace root or repo_path) "
+                "or a pasted 'diff' to review. Nothing to audit."
+            )
+
+        shared_task = (
+            f"{task}\n\nTarget repo_path for the read-only git tool (if needed): "
+            f"{repo_path or '(workspace root)'}\n\n"
+            "Parent-provided diff to review (review exactly this diff):\n```diff\n"
+            f"{diff_text}\n```"
+        )
+
+        provider_id = await ctx.get_current_chat_provider_id(event.unified_msg_origin)
+        semaphore = asyncio.Semaphore(_MAX_PARALLEL_REVIEWERS)
+
+        async def run_reviewer(name: str, system_prompt: str) -> tuple[str, str]:
+            async with semaphore:
+                body = await self._run_agent(
+                    ctx,
+                    event,
+                    provider_id,
+                    system_prompt=system_prompt,
+                    prompt=f"{shared_task}\n\nReviewer focus: {name}.",
+                    tools=toolset,
+                    max_steps=_MAX_REVIEWER_STEPS,
+                )
+            return name, body or "NO_ISSUES"
+
+        reviewer_results = await asyncio.gather(
+            *(run_reviewer(name, prompt) for name, prompt in _DEEP_REVIEW_SPECIALISTS)
+        )
+
+        if not any(
+            body.strip() and body.strip() != "NO_ISSUES" for _, body in reviewer_results
+        ):
+            return "error: all specialist reviewers failed to produce findings."
+
+        reports_block = "\n\n".join(
+            f"## Reviewer: {name}\n{body}" for name, body in reviewer_results
+        )
+        final_text = await self._run_agent(
+            ctx,
+            event,
+            provider_id,
+            system_prompt=_DEEP_REVIEW_AGGREGATOR_PROMPT,
+            prompt=f"{shared_task}\n\nSpecialist reports to merge:\n\n{reports_block}",
+            tools=None,
+            max_steps=_MAX_AGGREGATOR_STEPS,
+        )
+        return final_text or "error: the aggregator returned no final review."
+
+
+DEEP_REVIEW_TOOL = DeepReviewTool()
+
+
+# --------------------------------------------------------------------------- #
 # Plugin entry.
 # --------------------------------------------------------------------------- #
 # NOTE: The @register decorator is deprecated. AstrBot auto-detects classes
 # that inherit from Star; identity/description come from metadata.yaml.
 class ReasonixSubagentsPlugin(Star):
-    """Registers the four Reasonix subagent delegation tools on the main LLM."""
+    """Registers the Reasonix subagent delegation tools (incl. deep_review) on the main LLM."""
 
     def __init__(self, context: Context, config: Any = None) -> None:
         super().__init__(context)
@@ -724,9 +1045,11 @@ class ReasonixSubagentsPlugin(Star):
                 RESEARCH_TOOL,
                 REVIEW_TOOL,
                 SECURITY_REVIEW_TOOL,
+                DEEP_REVIEW_TOOL,
             )
             self.logger.info(
-                "Registered Reasonix subagent tools: explore, research, review, security_review."
+                "Registered Reasonix subagent tools: explore, research, review, "
+                "security_review, deep_review."
             )
         except Exception:  # noqa: BLE001
             self.logger.exception("Failed to register Reasonix subagent tools.")
@@ -742,6 +1065,7 @@ class ReasonixSubagentsPlugin(Star):
             "- research: 代码 + 网页研究",
             "- review: 只读代码评审（git diff）",
             "- security_review: 只读安全评审",
+            "- deep_review: 并行多专家评审 + 置信度门禁（更慢更细）",
             "",
             "依赖：代码读取需启用 Computer Use；research 需配置 web 搜索；",
             "review/security_review 需把 git 仓库放进会话 workspace。",

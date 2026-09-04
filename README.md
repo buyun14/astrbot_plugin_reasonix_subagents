@@ -18,7 +18,8 @@
 | `explore` | 只读代码库调查，返回一条蒸馏结论 | file-read / grep / 只读 shell / 只读 git |
 | `research` | 代码 + 网页交叉研究 | 上 + 已配置的 web 搜索/extract |
 | `review` | 对 workspace 内 git 仓库改动做代码评审 | file-read / grep / 只读 git / 只读 shell |
-| `security-review` | 安全视角评审（威胁模型分级） | 同 review |
+| `security-review` | 安全视角评审（威胁模型分级 + 危险 API 清单） | 同 review |
+| `deep_review` | 并行多专家评审 + 置信度门禁（更细更慢） | 同 review（多轮） |
 
 外加一个**只读 git 工具** `reasonix_git_read`（白名单子命令：`status diff log show blame ls-files rev-parse branch remote describe shortlog tag`；禁止写子命令；输出截断；`repo_path` 默认限制在会话 workspace 内）。
 
@@ -30,11 +31,30 @@
 2. WebUI 重载插件。
 3. 确保当前会话人格能挂载这些工具：
    - 若人格工具列表为“全部工具”，自动生效；
-   - 若人格指定了工具白名单，需把 `explore research review security_review` 加进去。
+   - 若人格指定了工具白名单，需把 `explore research review security_review deep_review` 加进去。
 4. 让主 LLM 委派即可，例如：
    - “explore 一下 `astrbot/core/star/context.py` 里 tool_loop_agent 的实现”
    - “review 当前 workspace 仓库的改动”
    - “security-review 一下最近改的鉴权代码”
+
+## deep_review（融合增强，2026-09-04）
+
+`deep_review` 是 `review` 的“深水区”版本，思路改编自 Anthropic 官方
+[claude-plugins-official](https://github.com/anthropics/claude-plugins-official)：
+
+1. **并行 5 个专项评审者**（`asyncio` 并发上限 3），各自在独立上下文、只读工具集里审同一份 diff：
+   - `correctness`（正确性 & 隐藏行为变化）
+   - `guidelines`（项目规范/AGENTS.md 一致性 + 代码质量）
+   - `silent-failures`（错误处理：静默失败、宽泛 catch、吞错、掩盖性 fallback）
+   - `tests`（变更的测试覆盖质量，行为导向）
+   - `comments-types`（注释/文档与类型设计是否保值）
+2. 每个评审者对每个 issue 给出 **0-100 置信度** 与 file:line 证据；
+3. 一个 **merge/arbiter** 步骤按评分卡（0/25/50/75/100）**过滤掉 <80** 的误报、跨评审去重，
+   输出 `verdict / blocking_findings / non_blocking / required_changes`。
+
+相比 `review`：能显著降低误报、覆盖多个视角，但更慢、更耗 token——适合大改动/高风险改动，
+或当 `review` 首次返回大量不确定发现时。入参同 `review`（`task` + 可选 `diff`/`repo_path`）；
+若两者都没有且 workspace 仓库不可达会快速失败并索要 diff。
 
 ## 前置条件与限制
 
@@ -101,6 +121,19 @@ SOFTWARE.
 ```
 
 本插件自身代码与文档采用 **MIT 许可**（见仓库 `LICENSE` 文件）。Reasonix 提示词部分的版权声明已保留于上文。
+
+### 融合素材来源（claude-plugins-official，Apache-2.0）
+
+`deep_review` 的“并行多专家评审 + 0-100 置信度门禁（<80 过滤）”改编自
+[claude-plugins-official](https://github.com/anthropics/claude-plugins-official)：
+- `plugins/code-review`（`commands/code-review.md`：并行独立评审 + 置信度评分卡 + 误报清单）；
+- `plugins/pr-review-toolkit`（`agents/`：correctness / guidelines / silent-failure / tests /
+  comments-types 专项评审提示词）。
+`security_review` 的 “Additional dangerous-API scan” 清单改编自
+`plugins/security-guidance/hooks/patterns.py`（25 条漏洞模式规则，规则名与触发条件见该文件）。
+以上内容均为 **Apache-2.0** 许可，使用时保留本来源署名。适配改动要点：移除 CLAUDE.md / `gh` /
+PR 评论 / Haiku·Sonnet 模型标签等 Claude Code 运行时绑定，改为读 workspace git diff 或粘贴的
+`diff` + file/grep 工具，并把原“每 issue 单独打分 agent”折叠为一个 merge/arbiter 步骤以控制成本。
 
 ## 实测反馈与已知短板应对（2026-09-02，Linux 主机 / QQ 渠道）
 
