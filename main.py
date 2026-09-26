@@ -707,6 +707,15 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
             _as_str_list(over.get("excluded_tools"))
         )
         allowed_tuple = tuple(t for t in allowed if t not in banned)
+        # Apply the same exclusions to extra_tools (named FunctionTool
+        # instances, e.g. GIT_READ_TOOL). Without this, putting
+        # 'reasonix_git_read' in excluded_tools would not actually remove
+        # the git tool from the subagent's available set.
+        extra_tools_filtered = tuple(
+            t
+            for t in base.get("extra_tools", self.extra_tools)
+            if getattr(t, "name", None) not in banned
+        )
 
         # max_steps: per-subagent > defaults > builtin.
         fallback_steps = int(base.get("max_steps", self.max_steps))
@@ -729,7 +738,7 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
 
         return {
             "allowed_tools": allowed_tuple,
-            "extra_tools": tuple(base.get("extra_tools", self.extra_tools)),
+            "extra_tools": extra_tools_filtered,
             "max_steps": steps,
             "timeout": timeout,
             "discover_web": discover_web,

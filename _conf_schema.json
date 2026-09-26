@@ -59,8 +59,8 @@
           },
           "max_steps": {
             "type": "int",
-            "description": "子代理最大推理步数（0 表示沿用 defaults）",
-            "default": 12,
+            "description": "子代理最大推理步数（0 表示沿用 defaults.max_steps）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
@@ -106,8 +106,8 @@
           },
           "max_steps": {
             "type": "int",
-            "description": "子代理最大推理步数（0 表示沿用 defaults）",
-            "default": 12,
+            "description": "子代理最大推理步数（0 表示沿用 defaults.max_steps）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
@@ -153,8 +153,8 @@
           },
           "max_steps": {
             "type": "int",
-            "description": "子代理最大推理步数（0 表示沿用 defaults）",
-            "default": 8,
+            "description": "子代理最大推理步数（0 表示沿用 defaults.max_steps）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
@@ -200,8 +200,8 @@
           },
           "max_steps": {
             "type": "int",
-            "description": "子代理最大推理步数（0 表示沿用 defaults）",
-            "default": 8,
+            "description": "子代理最大推理步数（0 表示沿用 defaults.max_steps）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
@@ -247,8 +247,8 @@
           },
           "max_steps": {
             "type": "int",
-            "description": "每个 reviewer 的最大推理步数（0 表示沿用 defaults；内置默认 8）",
-            "default": 8,
+            "description": "每个 reviewer 的最大推理步数（0 表示沿用 defaults.max_steps；内置默认 8）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
