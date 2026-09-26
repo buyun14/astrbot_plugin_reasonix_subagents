@@ -118,7 +118,9 @@ async def execute(
     body = f"$ {' '.join(command)}\n{body}".strip()
     if len(body) > MAX_GIT_OUTPUT:
         body = body[:MAX_GIT_OUTPUT] + "\n...[truncated]"
-    return GitResult(True, body)
+    # Non-zero exit (unknown revision, invalid args, etc.) must surface as a
+    # failed result so callers don't treat the stderr text as a valid snapshot.
+    return GitResult(proc.returncode == 0, body)
 
 
 @pydantic_dataclass

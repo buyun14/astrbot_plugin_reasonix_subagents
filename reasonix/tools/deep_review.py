@@ -32,6 +32,23 @@ def _strip_command_prefix(text: str) -> str:
     return text
 
 
+def reports_block(results: list[tuple[str, str]]) -> str:
+    """Format specialist outputs as the aggregator's input block."""
+    return "\n\n".join(f"## Reviewer: {n}\n{b}" for n, b in results)
+
+
+async def _envelope(reviewer_phase, aggregator_phase):
+    """Run reviewer + aggregator serially and return (results, aggregator_text).
+
+    A single coroutine is needed so ``asyncio.wait_for`` can wrap both
+    phases under one deadline. The reviewer phase must finish before the
+    aggregator gets its input, so the two cannot run in parallel.
+    """
+    results = await reviewer_phase()
+    final_text = await aggregator_phase(results)
+    return results, final_text
+
+
 @dataclass
 class DeepReviewTool(ReasonixSubagentTool):
     """Several reviewers in parallel, then a confidence-gated merge step."""
@@ -84,11 +101,31 @@ class DeepReviewTool(ReasonixSubagentTool):
                 )
             return name, body or "NO_ISSUES"
 
+        async def reviewer_phase() -> list[tuple[str, str]]:
+            return await asyncio.gather(
+                *(run_reviewer(n, p) for n, p in DEEP_REVIEW_SPECIALISTS)
+            )
+
+        async def aggregator_phase(results: list[tuple[str, str]]) -> str:
+            return await run_agent(
+                ctx,
+                event,
+                provider_id=provider_id,
+                prompt=f"{shared_task}\n\nSpecialist reports to merge:\n\n{reports_block(results)}",
+                system_prompt=DEEP_REVIEW_AGGREGATOR_PROMPT,
+                tools=None,
+                max_steps=policy.aggregator_max_steps or 4,
+                tool_timeout=policy.timeout,
+            )
+
+        # Wrap BOTH reviewer gather and aggregator in one asyncio.wait_for so
+        # the documented overall_timeout (wall-clock budget for the entire
+        # deep_review call) actually bounds the whole pipeline. The previous
+        # version only covered the reviewer phase, leaving a slow aggregator
+        # able to run unbounded beyond the user-set budget.
         try:
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    *(run_reviewer(n, p) for n, p in DEEP_REVIEW_SPECIALISTS)
-                ),
+            results, final_text = await asyncio.wait_for(
+                _envelope(reviewer_phase, aggregator_phase),
                 timeout=policy.overall_timeout,
             )
         except asyncio.TimeoutError:
@@ -106,22 +143,11 @@ class DeepReviewTool(ReasonixSubagentTool):
         if not meaningful:
             return "LGTM - all five specialist reviewers found no reportable issues."
 
-        reports_block = "\n\n".join(f"## Reviewer: {n}\n{b}" for n, b in results)
-
-        final_text = await run_agent(
-            ctx,
-            event,
-            provider_id=provider_id,
-            prompt=f"{shared_task}\n\nSpecialist reports to merge:\n\n{reports_block}",
-            system_prompt=DEEP_REVIEW_AGGREGATOR_PROMPT,
-            tools=None,
-            max_steps=policy.aggregator_max_steps or 4,
-            tool_timeout=policy.timeout,
-        )
         # Degrade gracefully: if the aggregator produced nothing, hand back the
         # raw specialist reports rather than failing the whole run.
         return final_text or (
-            "Aggregator returned no text; raw specialist reports:\n\n" + reports_block
+            "Aggregator returned no text; raw specialist reports:\n\n"
+            + reports_block(results)
         )
 
     @staticmethod

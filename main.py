@@ -26,7 +26,15 @@ class ReasonixSubagentsPlugin(Star):
 
     def __init__(self, context: Context, config: dict | None = None) -> None:
         super().__init__(context)
-        self.config_holder = ConfigHolder(config)
+        # Provider mode: read self.config lazily on every holder.get() so
+        # any later mutation/replacement of plugin.config (whether by a
+        # future AstrBot hot-reload path or by tests that poke the
+        # attribute directly) is picked up immediately without a manual
+        # reload hook. Until the Star base class assigns self.config we
+        # fall back to the initial value passed in here.
+        self.config_holder = ConfigHolder(
+            lambda: getattr(self, "config", None) or dict(config or {})
+        )
         self.git_tool, self.tools = build_tools(self.config_holder)
         self._register()
 
@@ -49,8 +57,13 @@ class ReasonixSubagentsPlugin(Star):
             logger.exception("Failed to register Reasonix subagent tools.")
 
     async def shutdown(self) -> None:
-        """Drop the config reference so no stale instance survives unload."""
-        self.config_holder.update({})
+        """Cleanup on plugin unload.
+
+        In provider mode there is no snapshot to clear (the provider closure
+        just reads ``self.config`` which will be torn down with the plugin
+        instance), but keeping the hook around documents the lifecycle for
+        callers and gives a place to add cleanup later if needed.
+        """
 
     @filter.command(
         "reasonix_subagents", alias={"reasonix-subagents", "reasonix子代理"}

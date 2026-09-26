@@ -8,7 +8,7 @@ needed and ``shutdown`` clears the reference.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 # Section + key names shared by policy resolver, discovery and schema.
 SEC_DEFAULTS = "defaults"
@@ -17,16 +17,47 @@ SEC_ADVANCED = "advanced"
 
 
 class ConfigHolder:
-    """Holds the current plugin config dict; replaceable atomically on reload."""
+    """Returns the latest plugin config on every ``get()``.
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self._config: dict[str, Any] = dict(config or {})
+    Two construction modes:
+
+    - Snapshot: pass a dict, and the holder keeps that dict until ``update``
+      is called. Fine when no one else owns the dict.
+    - Provider: pass a zero-arg callable that returns the *current* config
+      dict. The plugin should use this with ``lambda: self.config`` so that
+      if AstrBot ever replaces ``plugin.config`` in place, every subsequent
+      ``get()`` reflects the new value without the plugin having to wire
+      a reload hook. ``update`` is ignored in provider mode (and
+      ``shutdown`` no longer needs to clear anything).
+
+    The provider mode avoids a class of bugs where a config dict is
+    snapshotted at __init__ time and never refreshed, leaving "hot reload"
+    knobs silently stale until the plugin instance is rebuilt.
+    """
+
+    def __init__(
+        self,
+        config: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
+    ) -> None:
+        self._provider: Callable[[], dict[str, Any]] | None = None
+        if callable(config):
+            self._provider = config
+        else:
+            self._snapshot: dict[str, Any] = dict(config or {})
 
     def update(self, config: dict[str, Any] | None) -> None:
-        self._config = dict(config or {})
+        # Provider mode: external code owns the truth, so update is a no-op.
+        # The provider (e.g. ``lambda: self.config``) is consulted on every
+        # ``get()`` and will return the latest dict.
+        if self._provider is not None:
+            return
+        self._snapshot = dict(config or {})
 
     def get(self) -> dict[str, Any]:
-        return self._config
+        if self._provider is not None:
+            value = self._provider()
+            return value if isinstance(value, dict) else {}
+        return self._snapshot
 
 
 def as_str_list(value: Any) -> tuple[str, ...]:
