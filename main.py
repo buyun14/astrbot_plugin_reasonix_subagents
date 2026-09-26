@@ -65,10 +65,18 @@ def _plugin_config() -> dict[str, Any]:
 
 
 def _as_str_list(value: Any) -> tuple[str, ...]:
-    """Coerce a config field to a tuple of stripped, non-empty strings."""
+    """Coerce a config field to a tuple of stripped, non-empty strings.
+
+    Non-string elements are dropped silently rather than coerced via
+    ``str()`` so a malformed config (e.g. an integer, dict, or nested list
+    sneaking into an ``allowed_tools``/``excluded_tools`` field) does not
+    silently change which tools the subagent can see. Dropped elements are
+    expected to be rare; if they appear it usually means the user typo'd a
+    value rather than authoring an attack.
+    """
     if not isinstance(value, (list, tuple)):
         return ()
-    return tuple(s for s in (str(v).strip() for v in value) if s)
+    return tuple(s for s in (v.strip() for v in value if isinstance(v, str)) if s)
 
 
 def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
@@ -1193,6 +1201,31 @@ class DeepReviewTool(ReasonixSubagentTool):
         repo_path = str(kwargs.get("repo_path") or "").strip()
         diff_text = pasted_diff
         if not diff_text:
+            # Honor excluded_tools for the internal git snapshot path too:
+            # if the user has blacklisted reasonix_git_read, do NOT silently
+            # call GIT_READ_TOOL to build the diff (that would bypass the
+            # exclusion). Require a pasted diff in that case.
+            cfg = _plugin_config()
+            banned: set[str] = set()
+            defaults = cfg.get("defaults")
+            if isinstance(defaults, dict):
+                banned.update(_as_str_list(defaults.get("excluded_tools")))
+            subagents = cfg.get("subagents")
+            deep_section = (
+                subagents.get("deep_review")
+                if isinstance(subagents, dict)
+                and isinstance(subagents.get("deep_review"), dict)
+                else None
+            )
+            if deep_section is not None:
+                banned.update(_as_str_list(deep_section.get("excluded_tools")))
+            if "reasonix_git_read" in banned:
+                return (
+                    "error: reasonix_git_read is in excluded_tools for deep_review, "
+                    "so the internal git diff snapshot is disabled. Pass a 'diff' "
+                    "argument (the full diff text) so the reviewers can audit it "
+                    "without touching the repo."
+                )
             git_result = await GIT_READ_TOOL.call(
                 context, subcommand="diff", repo_path=repo_path or None
             )
