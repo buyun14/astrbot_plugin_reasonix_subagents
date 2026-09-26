@@ -265,6 +265,17 @@
               "step": 1
             }
           },
+          "overall_timeout": {
+            "type": "int",
+            "description": "deep_review 整体墙钟预算（秒），含全部并行 reviewer 与 merge",
+            "hint": "0 表示沿用内置默认 600。超时会返回错误并建议缩小 diff。",
+            "default": 0,
+            "slider": {
+              "min": 0,
+              "max": 1800,
+              "step": 30
+            }
+          },
           "allowed_tools": {
             "type": "list",
             "description": "工具白名单",
