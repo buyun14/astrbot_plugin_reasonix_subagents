@@ -1,0 +1,221 @@
+{
+  "defaults": {
+    "type": "object",
+    "description": "全局默认值",
+    "hint": "对所有子代理生效。各子代理未单独指定字段时使用这里。",
+    "items": {
+      "max_steps": {
+        "type": "int",
+        "description": "子代理最大推理步数",
+        "hint": "留空或 0 表示沿用各子代理的内置默认",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        }
+      },
+      "tool_timeout": {
+        "type": "int",
+        "description": "单次工具调用超时（秒）",
+        "hint": "影响子代理每次 tool_loop_agent 的 tool_call_timeout",
+        "default": 120,
+        "slider": {
+          "min": 5,
+          "max": 600,
+          "step": 5
+        }
+      },
+      "extra_allowed": {
+        "type": "list",
+        "description": "所有子代理额外允许调用的工具名",
+        "hint": "叠加在各子代理白名单之上（去重）；填错名称将输出 warning 而不会崩溃",
+        "default": []
+      },
+      "excluded_tools": {
+        "type": "list",
+        "description": "全局排除的工具名",
+        "hint": "优先级最高，会从所有子代理的白名单中剔除。",
+        "default": []
+      }
+    }
+  },
+
+  "subagents": {
+    "type": "object",
+    "description": "各子代理独立覆盖",
+    "hint": "留空的字段沿用全局 defaults，再沿用内置默认。",
+    "items": {
+      "explore": {
+        "type": "object",
+        "description": "只读代码调研子代理",
+        "hint": "改动后热生效。",
+        "items": {
+          "max_steps": {
+            "type": "int",
+            "description": "子代理最大推理步数（0 表示沿用 defaults）",
+            "default": 12,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "allowed_tools": {
+            "type": "list",
+            "description": "工具白名单",
+            "hint": "留空 = 使用内置默认（代码只读工具 + 只读 git）。",
+            "default": []
+          },
+          "discover_web": {
+            "type": "bool",
+            "description": "是否自动发现只读网页工具",
+            "hint": "explore 内置默认 false；改 true 可能拉入第三方网页工具。",
+            "default": false
+          },
+          "excluded_tools": {
+            "type": "list",
+            "description": "本子代理单独排除的工具",
+            "default": []
+          }
+        }
+      },
+      "research": {
+        "type": "object",
+        "description": "带联网能力的调研子代理",
+        "hint": "改动后热生效。",
+        "items": {
+          "max_steps": {
+            "type": "int",
+            "description": "子代理最大推理步数（0 表示沿用 defaults）",
+            "default": 12,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "allowed_tools": {
+            "type": "list",
+            "description": "工具白名单",
+            "hint": "留空 = 使用内置默认（代码只读 + 内置网页工具）。",
+            "default": []
+          },
+          "discover_web": {
+            "type": "bool",
+            "description": "是否自动发现第三方只读网页工具",
+            "hint": "research 内置默认 true；改 false 会失去第三方网页工具的自动发现。",
+            "default": true
+          },
+          "excluded_tools": {
+            "type": "list",
+            "description": "本子代理单独排除的工具",
+            "default": []
+          }
+        }
+      },
+      "review": {
+        "type": "object",
+        "description": "只读代码评审子代理",
+        "hint": "改动后热生效。",
+        "items": {
+          "max_steps": {
+            "type": "int",
+            "description": "子代理最大推理步数（0 表示沿用 defaults）",
+            "default": 8,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "allowed_tools": {
+            "type": "list",
+            "description": "工具白名单",
+            "hint": "留空 = 使用内置默认（代码只读 + 只读 git）。",
+            "default": []
+          },
+          "discover_web": {
+            "type": "bool",
+            "description": "是否自动发现只读网页工具",
+            "hint": "review 内置默认 false。",
+            "default": false
+          },
+          "excluded_tools": {
+            "type": "list",
+            "description": "本子代理单独排除的工具",
+            "default": []
+          }
+        }
+      },
+      "security_review": {
+        "type": "object",
+        "description": "只读安全评审子代理",
+        "hint": "改动后热生效。",
+        "items": {
+          "max_steps": {
+            "type": "int",
+            "description": "子代理最大推理步数（0 表示沿用 defaults）",
+            "default": 8,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "allowed_tools": {
+            "type": "list",
+            "description": "工具白名单",
+            "hint": "留空 = 使用内置默认（代码只读 + 只读 git）。",
+            "default": []
+          },
+          "discover_web": {
+            "type": "bool",
+            "description": "是否自动发现只读网页工具",
+            "hint": "security_review 内置默认 false。",
+            "default": false
+          },
+          "excluded_tools": {
+            "type": "list",
+            "description": "本子代理单独排除的工具",
+            "default": []
+          }
+        }
+      },
+      "deep_review": {
+        "type": "object",
+        "description": "并行多专家评审 + 置信度门禁",
+        "hint": "改动后热生效。",
+        "items": {
+          "max_steps": {
+            "type": "int",
+            "description": "每个 reviewer 的最大推理步数（0 表示沿用 defaults；内置默认 8）",
+            "default": 8,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "allowed_tools": {
+            "type": "list",
+            "description": "工具白名单",
+            "hint": "留空 = 使用内置默认（代码只读 + 只读 git）。",
+            "default": []
+          },
+          "discover_web": {
+            "type": "bool",
+            "description": "是否自动发现只读网页工具",
+            "hint": "deep_review 内置默认 false。",
+            "default": false
+          },
+          "excluded_tools": {
+            "type": "list",
+            "description": "本子代理单独排除的工具",
+            "default": []
+          }
+        }
+      }
+    }
+  }
+}

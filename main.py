@@ -26,6 +26,7 @@ Reference prompts:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,47 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.tools.computer_tools.util import workspace_root_for_context
+
+_logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
+
+# --------------------------------------------------------------------------- #
+# Configuration plumbing.
+# --------------------------------------------------------------------------- #
+# The plugin's tool instances (EXPLORE_TOOL / RESEARCH_TOOL / ...) are created
+# at import time, BEFORE the plugin instance exists, so they cannot capture a
+# config object at construction. The plugin instance appends itself to this
+# module-level list in ``__init__``; tools read the *current* config via
+# ``_plugin_config()`` on every call, which is both simpler than snapshotting
+# and robust to AstrBot replacing the plugin instance on reload.
+_PLUGIN_REF: list[Any] = []
+
+
+def _plugin_config() -> dict[str, Any]:
+    """Return the latest plugin ``config`` dict, or ``{}`` if unavailable."""
+    for plugin in _PLUGIN_REF:
+        cfg = getattr(plugin, "config", None)
+        if isinstance(cfg, dict):
+            return cfg
+    return {}
+
+
+def _as_str_list(value: Any) -> tuple[str, ...]:
+    """Coerce a config field to a tuple of stripped, non-empty strings."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(s for s in (str(v).strip() for v in value) if s)
+
+
+def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
+    """Parse ``value`` as an int and clamp it to ``[low, high]``; fallback on error."""
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if num <= 0:
+        return fallback
+    return max(low, min(high, num))
+
 
 # Tool names the subagents may expose. Resolution happens at call time against
 # the live FunctionToolManager, so tools that are not configured/active are
@@ -558,23 +600,125 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
     # other plugins registered (e.g. searxng_*), so research works without a
     # built-in AstrBot web-search provider.
     discover_web_readonly: bool = False
+    # Config-section key for ``_BUILTIN_POLICY``. Subclasses override.
+    policy_name: str = ""
 
-    def _build_toolset(self, tool_mgr: Any) -> ToolSet:
+    def _policy(self) -> dict[str, Any]:
+        """Resolve the effective policy for this subagent from config + builtin.
+
+        Resolution order (per task spec):
+        - ``subagents.<name>.allowed_tools`` if non-empty, else builtin baseline.
+        - Append ``defaults.extra_allowed`` (dedup, order preserved).
+        - Remove ``defaults.excluded_tools`` and ``subagents.<name>.excluded_tools``.
+        - ``max_steps``: per-subagent > defaults > builtin. Clamped to [1, 50].
+        - ``timeout``: ``defaults.tool_timeout`` clamped to [5, 600], default 120.
+        - ``discover_web``: per-subagent > builtin.
+        - ``provider_id``: per-subagent (empty = follow current session).
+
+        Returns:
+            Dict with keys ``allowed_tools``, ``extra_tools``, ``max_steps``,
+            ``timeout``, ``discover_web``, ``provider_id``.
+        """
+        cfg = _plugin_config()
+        base = _BUILTIN_POLICY.get(self.policy_name, {})
+        defaults_section = cfg.get("defaults")
+        defaults = defaults_section if isinstance(defaults_section, dict) else {}
+        subagents_section = cfg.get("subagents")
+        subagents = subagents_section if isinstance(subagents_section, dict) else {}
+        over = (
+            subagents.get(self.policy_name)
+            if isinstance(subagents.get(self.policy_name), dict)
+            else {}
+        )
+
+        # allowed_tools: per-subagent non-empty wins, else builtin baseline.
+        # ``_as_str_list`` strips whitespace and drops empties.
+        allowed_over = _as_str_list(over.get("allowed_tools"))
+        baseline = (
+            tuple(allowed_over)
+            if allowed_over
+            else tuple(base.get("allowed_tools", self.allowed_tools))
+        )
+
+        # Append ``defaults.extra_allowed`` (dedup, preserve order).
+        allowed: list[str] = list(baseline)
+        for t in _as_str_list(defaults.get("extra_allowed")):
+            if t not in allowed:
+                allowed.append(t)
+
+        # Remove global + per-subagent exclusions (highest priority).
+        banned: set[str] = set(_as_str_list(defaults.get("excluded_tools"))) | set(
+            _as_str_list(over.get("excluded_tools"))
+        )
+        allowed_tuple = tuple(t for t in allowed if t not in banned)
+
+        # max_steps: per-subagent > defaults > builtin.
+        fallback_steps = int(base.get("max_steps", self.max_steps))
+        over_steps = over.get("max_steps")
+        default_steps = defaults.get("max_steps")
+        if isinstance(over_steps, int) and over_steps > 0:
+            steps = _clamp_int(over_steps, 1, 50, fallback_steps)
+        elif isinstance(default_steps, int) and default_steps > 0:
+            steps = _clamp_int(default_steps, 1, 50, fallback_steps)
+        else:
+            steps = fallback_steps
+
+        timeout = _clamp_int(defaults.get("tool_timeout"), 5, 600, 120)
+
+        discover_web = over.get("discover_web")
+        if not isinstance(discover_web, bool):
+            discover_web = bool(base.get("discover_web", self.discover_web_readonly))
+
+        return {
+            "allowed_tools": allowed_tuple,
+            "extra_tools": tuple(base.get("extra_tools", self.extra_tools)),
+            "max_steps": steps,
+            "timeout": timeout,
+            "discover_web": discover_web,
+        }
+
+    def _build_toolset(self, tool_mgr: Any) -> tuple[ToolSet, list[str]]:
+        """Build the ToolSet from current policy.
+
+        Returns:
+            (toolset, unknown_tool_names). The second list contains names that
+            were configured by the user but not present (or inactive) in the
+            FunctionToolManager - surfaced as a warning so typos do not pass
+            silently.
+        """
+        policy = self._policy()
         toolset = ToolSet()
-        for name in self.allowed_tools:
+        unknown: list[str] = []
+        for name in policy["allowed_tools"]:
             try:
-                tool = tool_mgr.get_func(name)
+                tool = tool_mgr.get_func(name) if tool_mgr is not None else None
             except Exception:  # noqa: BLE001 - manager lookup is best-effort.
                 tool = None
             if tool is not None and bool(getattr(tool, "active", True)):
                 toolset.add_tool(tool)
-        for instance in self.extra_tools:
+            elif tool is None:
+                unknown.append(name)
+        for instance in policy["extra_tools"]:
             toolset.add_tool(instance)
-        if self.discover_web_readonly and tool_mgr is not None:
+        if policy["discover_web"] and tool_mgr is not None:
             for tool in getattr(tool_mgr, "func_list", ()):
                 if _is_web_readonly_tool(tool):
                     toolset.add_tool(tool)
-        return toolset
+        if unknown:
+            available = sorted(
+                t.name
+                for t in getattr(tool_mgr, "func_list", ())
+                if bool(getattr(t, "active", True)) and getattr(t, "name", "")
+            )
+            _logger.warning(
+                "[%s] %d configured tool name(s) not found: %s. "
+                "Currently active tools: %s",
+                self.policy_name or self.__class__.__name__,
+                len(unknown),
+                unknown,
+                available,
+            )
+        return toolset, unknown
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs: Any
@@ -609,11 +753,14 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
             tool_mgr = ctx.get_llm_tool_manager()
         except Exception:  # noqa: BLE001
             tool_mgr = None
-        toolset = self._build_toolset(tool_mgr) if tool_mgr is not None else ToolSet()
+        toolset, _unknown = (
+            self._build_toolset(tool_mgr) if tool_mgr is not None else (ToolSet(), [])
+        )
+        policy = self._policy()
         if toolset.empty():
             return (
                 "error: none of this subagent's read-only tools are currently available. "
-                f"Needed tool names (whichever apply): {', '.join((*self.allowed_tools,))}. "
+                f"Needed tool names (whichever apply): {', '.join(policy['allowed_tools'])}. "
                 "For code reading enable Computer Use (computer_use_runtime); for research "
                 "configure a web-search provider. "
             )
@@ -625,8 +772,8 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
             prompt=task,
             system_prompt=self.system_prompt,
             tools=toolset,
-            max_steps=self.max_steps,
-            tool_call_timeout=120,
+            max_steps=policy["max_steps"],
+            tool_call_timeout=policy["timeout"],
             stream=False,
         )
         text = (getattr(llm_resp, "completion_text", None) or "").strip()
@@ -655,6 +802,7 @@ class ExploreTool(ReasonixSubagentTool):
     max_steps: int = 12
     allowed_tools: tuple[str, ...] = _CODE_READ_TOOLS
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
+    policy_name: str = "explore"
 
 
 @dataclass
@@ -679,6 +827,7 @@ class ResearchTool(ReasonixSubagentTool):
     allowed_tools: tuple[str, ...] = (*_CODE_READ_TOOLS, *_WEB_TOOLS)
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
     discover_web_readonly: bool = True
+    policy_name: str = "research"
 
 
 @dataclass
@@ -705,6 +854,7 @@ class ReviewTool(ReasonixSubagentTool):
     max_steps: int = 8
     allowed_tools: tuple[str, ...] = _CODE_READ_TOOLS
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
+    policy_name: str = "review"
 
 
 @dataclass
@@ -730,6 +880,7 @@ class SecurityReviewTool(ReasonixSubagentTool):
     max_steps: int = 8
     allowed_tools: tuple[str, ...] = _CODE_READ_TOOLS
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
+    policy_name: str = "security_review"
 
 
 EXPLORE_TOOL = ExploreTool()
@@ -910,6 +1061,7 @@ class DeepReviewTool(ReasonixSubagentTool):
     allowed_tools: tuple[str, ...] = _CODE_READ_TOOLS
     extra_tools: tuple[FunctionTool, ...] = (GIT_READ_TOOL,)
     max_steps: int = _MAX_REVIEWER_STEPS
+    policy_name: str = "deep_review"
 
     async def _run_agent(
         self,
@@ -921,6 +1073,7 @@ class DeepReviewTool(ReasonixSubagentTool):
         prompt: str,
         tools: ToolSet | None,
         max_steps: int,
+        tool_timeout: int,
     ) -> str:
         """Run one isolated agent loop and return its final text."""
         llm_resp = await ctx.tool_loop_agent(
@@ -930,7 +1083,7 @@ class DeepReviewTool(ReasonixSubagentTool):
             system_prompt=system_prompt,
             tools=tools,
             max_steps=max_steps,
-            tool_call_timeout=120,
+            tool_call_timeout=tool_timeout,
             stream=False,
         )
         return (getattr(llm_resp, "completion_text", None) or "").strip()
@@ -950,7 +1103,10 @@ class DeepReviewTool(ReasonixSubagentTool):
             tool_mgr = ctx.get_llm_tool_manager()
         except Exception:  # noqa: BLE001
             tool_mgr = None
-        toolset = self._build_toolset(tool_mgr) if tool_mgr is not None else ToolSet()
+        toolset, _unknown = (
+            self._build_toolset(tool_mgr) if tool_mgr is not None else (ToolSet(), [])
+        )
+        policy = self._policy()
         if toolset.empty():
             return (
                 "error: none of deep_review's read-only tools are available. Enable Computer "
@@ -987,6 +1143,8 @@ class DeepReviewTool(ReasonixSubagentTool):
 
         provider_id = await ctx.get_current_chat_provider_id(event.unified_msg_origin)
         semaphore = asyncio.Semaphore(_MAX_PARALLEL_REVIEWERS)
+        reviewer_max_steps = policy["max_steps"]
+        tool_timeout = policy["timeout"]
 
         async def run_reviewer(name: str, system_prompt: str) -> tuple[str, str]:
             async with semaphore:
@@ -997,7 +1155,8 @@ class DeepReviewTool(ReasonixSubagentTool):
                     system_prompt=system_prompt,
                     prompt=f"{shared_task}\n\nReviewer focus: {name}.",
                     tools=toolset,
-                    max_steps=_MAX_REVIEWER_STEPS,
+                    max_steps=reviewer_max_steps,
+                    tool_timeout=tool_timeout,
                 )
             return name, body or "NO_ISSUES"
 
@@ -1021,11 +1180,55 @@ class DeepReviewTool(ReasonixSubagentTool):
             prompt=f"{shared_task}\n\nSpecialist reports to merge:\n\n{reports_block}",
             tools=None,
             max_steps=_MAX_AGGREGATOR_STEPS,
+            tool_timeout=tool_timeout,
         )
         return final_text or "error: the aggregator returned no final review."
 
 
 DEEP_REVIEW_TOOL = DeepReviewTool()
+
+
+# --------------------------------------------------------------------------- #
+# Built-in policy baseline.
+# --------------------------------------------------------------------------- #
+# Mirrors the per-subagent defaults that were hardcoded on the dataclass
+# fields before this plugin became configurable. Used as the *fallback* when
+# the user's _conf_schema.json omits a field. Keep in sync with the dataclass
+# defaults on ExploreTool / ResearchTool / ReviewTool / SecurityReviewTool /
+# DeepReviewTool above - any drift here is a regression.
+_BUILTIN_POLICY: dict[str, dict[str, Any]] = {
+    "explore": {
+        "max_steps": 12,
+        "allowed_tools": _CODE_READ_TOOLS,
+        "extra_tools": (GIT_READ_TOOL,),
+        "discover_web": False,
+    },
+    "research": {
+        "max_steps": 12,
+        "allowed_tools": (*_CODE_READ_TOOLS, *_WEB_TOOLS),
+        "extra_tools": (GIT_READ_TOOL,),
+        "discover_web": True,
+    },
+    "review": {
+        "max_steps": 8,
+        "allowed_tools": _CODE_READ_TOOLS,
+        "extra_tools": (GIT_READ_TOOL,),
+        "discover_web": False,
+    },
+    "security_review": {
+        "max_steps": 8,
+        "allowed_tools": _CODE_READ_TOOLS,
+        "extra_tools": (GIT_READ_TOOL,),
+        "discover_web": False,
+    },
+    "deep_review": {
+        "max_steps": _MAX_REVIEWER_STEPS,
+        "aggregator_max_steps": _MAX_AGGREGATOR_STEPS,
+        "allowed_tools": _CODE_READ_TOOLS,
+        "extra_tools": (GIT_READ_TOOL,),
+        "discover_web": False,
+    },
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -1039,6 +1242,11 @@ class ReasonixSubagentsPlugin(Star):
     def __init__(self, context: Context, config: Any = None) -> None:
         super().__init__(context)
         self.config = config or {}
+        # Register so module-level tool instances can read the latest config
+        # via ``_plugin_config()`` on every call. Keep the list bounded (one
+        # entry per reload) by dropping any prior reference to ``self``.
+        _PLUGIN_REF[:] = [p for p in _PLUGIN_REF if p is not self]
+        _PLUGIN_REF.append(self)
         try:
             self.context.add_llm_tools(
                 EXPLORE_TOOL,
@@ -1058,7 +1266,14 @@ class ReasonixSubagentsPlugin(Star):
         "reasonix_subagents", alias={"reasonix-subagents", "reasonix子代理"}
     )
     async def reasonix_subagents_status(self, event: AstrMessageEvent):
-        """Show the registered Reasonix subagent tools and their availability."""
+        """Show the registered Reasonix subagent tools and their resolved policy."""
+        tools = (
+            EXPLORE_TOOL,
+            RESEARCH_TOOL,
+            REVIEW_TOOL,
+            SECURITY_REVIEW_TOOL,
+            DEEP_REVIEW_TOOL,
+        )
         lines = [
             "Reasonix 子代理（agent-as-tool）：",
             "- explore: 只读代码库调查",
@@ -1067,8 +1282,29 @@ class ReasonixSubagentsPlugin(Star):
             "- security_review: 只读安全评审",
             "- deep_review: 并行多专家评审 + 置信度门禁（更慢更细）",
             "",
-            "依赖：代码读取需启用 Computer Use；research 需配置 web 搜索；",
-            "review/security_review 需把 git 仓库放进会话 workspace。",
-            "直接对主 LLM 说“explore 一下 …”或“review 当前改动”即可触发委派。",
+            "当前生效策略：",
         ]
+        for tool in tools:
+            try:
+                p = tool._policy()  # noqa: SLF001 - same module, intentional
+            except Exception:  # noqa: BLE001
+                p = {}
+            allowed = p.get("allowed_tools", ())
+            steps = p.get("max_steps", "?")
+            timeout = p.get("timeout", "?")
+            discover = p.get("discover_web", False)
+            allowed_str = ", ".join(allowed) if allowed else "(空)"
+            lines.append(
+                f"- {tool.name}: max_steps={steps}, timeout={timeout}s, "
+                f"discover_web={discover}"
+            )
+            lines.append(f"    白名单: {allowed_str}")
+        lines.append("")
+        lines.append(
+            "依赖：代码读取需启用 Computer Use；research 需配置 web 搜索；"
+            "review/security_review 需把 git 仓库放进会话 workspace。"
+        )
+        lines.append(
+            "直接对主 LLM 说『explore 一下 …』或『review 当前改动』即可触发委派。"
+        )
         yield event.plain_result("\n".join(lines))
