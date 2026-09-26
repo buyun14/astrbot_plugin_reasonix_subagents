@@ -678,6 +678,23 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
             if allowed_over
             else tuple(base.get("allowed_tools", self.allowed_tools))
         )
+        # Apply advanced.web_tool_names override: any entry in the built-in
+        # baseline that came from ``_WEB_TOOLS`` is replaced by the configured
+        # web_tool_names list (empty -> keep built-in). The advanced list
+        # fully replaces (not appends) the built-in web set, mirroring how
+        # the other advanced markers behave: marker lists are a security
+        # boundary and silent append would make them unauditable.
+        builtin_web = set(_WEB_TOOLS)
+        if any(name in builtin_web for name in baseline):
+            web_override = _marker_override("web_tool_names", _WEB_TOOLS)
+            rewritten: list[str] = []
+            for name in baseline:
+                if name in builtin_web:
+                    rewritten.extend(n for n in web_override if n not in rewritten)
+                else:
+                    if name not in rewritten:
+                        rewritten.append(name)
+            baseline = tuple(rewritten)
 
         # Append ``defaults.extra_allowed`` (dedup, preserve order).
         allowed: list[str] = list(baseline)
@@ -738,7 +755,11 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
                 tool = None
             if tool is not None and bool(getattr(tool, "active", True)):
                 toolset.add_tool(tool)
-            elif tool is None:
+            else:
+                # Either missing entirely OR present-but-disabled: both mean
+                # the user's configuration will silently lose this entry at
+                # runtime, so surface them in the unknown list so the warning
+                # below actually catches misconfigured tools.
                 unknown.append(name)
         for instance in policy["extra_tools"]:
             toolset.add_tool(instance)
@@ -1314,10 +1335,11 @@ class ReasonixSubagentsPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         # Register so module-level tool instances can read the latest config
-        # via ``_plugin_config()``. Keep the list bounded (one entry per
-        # reload) by dropping any prior reference to ``self``.
-        _PLUGIN_REF[:] = [p for p in _PLUGIN_REF if p is not self]
-        _PLUGIN_REF.append(self)
+        # via ``_plugin_config()``. Always replace the list with just this
+        # instance so plugin reloads (where AstrBot rebuilds the plugin
+        # object and overwrites self.config) take effect immediately and no
+        # stale instance keeps serving the old config.
+        _PLUGIN_REF[:] = [self]
         try:
             enabled_tools = [
                 tool for name, tool in self._TOOL_REGISTRY if _subagent_enabled(name)
