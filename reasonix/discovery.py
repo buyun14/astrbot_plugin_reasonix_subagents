@@ -31,15 +31,18 @@ def is_web_readonly_tool(tool: Any, cfg: dict[str, Any]) -> bool:
     if not name or name in skip or name.startswith("transfer_to_"):
         return False
     side_markers = advanced_override(cfg, "side_effect_markers", C.SIDE_EFFECT_MARKERS)
-    # Side-effect check applies to BOTH name and description.
+    # Side-effect check applies to BOTH name and description. We must run
+    # the description check BEFORE accepting a tool on its name alone:
+    # a tool named 'web_search_*' but described as writing/sending data
+    # would otherwise be exposed to a read-only subagent.
+    description = (getattr(tool, "description", "") or "").lower()
+    if _has_side_effect(description, side_markers):
+        return False
     if _has_side_effect(name, side_markers):
         return False
     web_markers = advanced_override(cfg, "web_markers", C.WEB_READ_MARKERS)
     if any(marker in name for marker in web_markers):
         return True
-    description = (getattr(tool, "description", "") or "").lower()
-    if _has_side_effect(description, side_markers):
-        return False
     return any(phrase in description for phrase in C.DESCRIPTION_WEB_MARKERS)
 
 

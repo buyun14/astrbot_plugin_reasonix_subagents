@@ -180,4 +180,17 @@ class DeepReviewTool(ReasonixSubagentTool):
                     "pass a 'diff' explicitly."
                 )
             return result.text
-        return _strip_command_prefix(result.text)
+        snapshot = _strip_command_prefix(result.text)
+        if not snapshot:
+            # The git tool always prefixes its output with "$ git ...\n".
+            # A clean repo (no pending changes) yields just that header
+            # line; after stripping the prefix we have nothing useful to
+            # send to the reviewers. Without this guard the aggregator
+            # would receive an empty task and the reviewers would happily
+            # report "no issues" on a non-existent diff.
+            return (
+                "error: 'git diff' produced no changes - nothing to audit. "
+                "Stage/make changes, point repo_path at the right repo, or "
+                "pass a 'diff' explicitly."
+            )
+        return snapshot

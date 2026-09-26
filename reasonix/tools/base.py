@@ -70,14 +70,32 @@ def build_toolset(
 
     if policy.discover_web and tool_mgr is not None:
         discovered = discover_web_tools(getattr(tool_mgr, "func_list", ()), cfg)
-        for tool in discovered:
+        # The banned set must also apply to auto-discovered tools: a tool
+        # blacklisted via excluded_tools would otherwise slip back in if it
+        # happened to match the web discovery heuristic. Filter before adding.
+        kept = [
+            t
+            for t in discovered
+            if getattr(t, "name", "") not in policy.banned_tool_names
+        ]
+        banned_discovered = [
+            t for t in discovered if getattr(t, "name", "") in policy.banned_tool_names
+        ]
+        for tool in kept:
             toolset.add_tool(tool)
         # Auditability: every auto-discovered tool is logged and named.
-        if discovered:
+        if kept:
             logger.info(
                 "[%s] auto-discovered read-only web tool(s): %s",
                 spec.name,
-                sorted(getattr(t, "name", "") for t in discovered),
+                sorted(getattr(t, "name", "") for t in kept),
+            )
+        if banned_discovered:
+            logger.info(
+                "[%s] %d auto-discovered tool(s) excluded by banned set: %s",
+                spec.name,
+                len(banned_discovered),
+                sorted(getattr(t, "name", "") for t in banned_discovered),
             )
 
     if unknown:

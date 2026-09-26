@@ -31,10 +31,20 @@ class ReasonixSubagentsPlugin(Star):
         # future AstrBot hot-reload path or by tests that poke the
         # attribute directly) is picked up immediately without a manual
         # reload hook. Until the Star base class assigns self.config we
-        # fall back to the initial value passed in here.
-        self.config_holder = ConfigHolder(
-            lambda: getattr(self, "config", None) or dict(config or {})
-        )
+        # fall back to the initial value passed in here. The fallback
+        # uses an explicit isinstance(dict) check so an empty {} plugin
+        # config is treated as a real (empty) config, not as "use the
+        # initial config" -- otherwise resetting a plugin to defaults
+        # would silently keep the old settings.
+        initial = dict(config or {})
+
+        def _read_config() -> dict:
+            current = getattr(self, "config", None)
+            if isinstance(current, dict):
+                return current
+            return initial
+
+        self.config_holder = ConfigHolder(_read_config)
         self.git_tool, self.tools = build_tools(self.config_holder)
         self._register()
 

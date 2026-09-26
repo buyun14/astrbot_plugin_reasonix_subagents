@@ -328,3 +328,229 @@ def test_config_holder_provider_non_dict_returns_empty():
     assert h.get() == {}
     h2 = ConfigHolder(lambda: "not a dict")
     assert h2.get() == {}
+
+
+# --- Review 1 guard: description-side-effect blocks web-marker names ---
+
+
+def test_discovery_rejects_named_web_tool_with_side_effect_description():
+    """A tool whose NAME matches a web marker but whose DESCRIPTION mentions
+    side effects must NOT be exposed to a read-only subagent.
+
+    Without the fix the name match returned True and the description was
+    never inspected.
+    """
+    from dataclasses import dataclass
+
+    from reasonix.discovery import is_web_readonly_tool
+
+    @dataclass
+    class FakeTool:
+        name: str
+        description: str
+        active: bool = True
+
+    tool = FakeTool(
+        name="web_search_danger",
+        description="Search the web and write results back to disk on success.",
+    )
+    assert is_web_readonly_tool(tool, {}) is False
+
+
+# --- Review 2 guard: excluded_tools filters auto-discovered web tools ---
+
+
+def test_build_toolset_excluded_filters_auto_discovered():
+    """A blacklisted tool that ALSO matches web discovery must not be added."""
+    from dataclasses import dataclass
+
+    from reasonix.policy import resolve_policy
+    from reasonix.tools.base import build_toolset
+    from reasonix.tools.git_read import ReasonixGitReadTool
+
+    @dataclass
+    class FakeTool:
+        name: str
+        description: str = ""
+        active: bool = True
+
+    git_tool = ReasonixGitReadTool()
+    dangerous = FakeTool(
+        name="searxng_web_search",
+        description="Search the web",  # matches web marker
+    )
+
+    class Mgr:
+        def __init__(self):
+            self.func_list = [dangerous]
+
+        def get_func(self, name):
+            for t in self.func_list:
+                if t.name == name:
+                    return t
+            return None
+
+    cfg = {
+        "defaults": {"excluded_tools": ["searxng_web_search"]},
+        "subagents": {"research": {"discover_web": True}},
+    }
+    pol = resolve_policy(cfg, SPECS["research"])
+    assert "searxng_web_search" in pol.banned_tool_names
+
+    ts = build_toolset(Mgr(), pol, SPECS["research"], git_tool, cfg)
+    added_names = [getattr(t, "name", "") for t in ts.tools]
+    assert "searxng_web_search" not in added_names
+
+
+# --- Review 3 guard: empty {} plugin.config is the current config ---
+
+
+def test_plugin_empty_config_not_fallback_to_initial(monkeypatch):
+    """Resetting plugin.config to {} must surface immediately, not silently
+    fall back to the initial non-empty config."""
+    from main import ReasonixSubagentsPlugin
+
+    captured_cfg: list[dict] = []
+
+    class FakeHolder:
+        def __init__(self, provider):
+            self._get = provider
+
+        def get(self):
+            return self._get()
+
+    class FakeTool:
+        name = "explore"
+        description = ""
+
+    class FakeCtx:
+        def add_llm_tools(self, *_a, **_k):
+            return None
+
+    # Stub out build_tools + ConfigHolder so we only exercise the closure.
+    monkeypatch.setattr("main.ConfigHolder", FakeHolder)
+    monkeypatch.setattr(
+        "main.build_tools",
+        lambda _holder: (None, [FakeTool()]),
+    )
+
+    initial = {"defaults": {"max_steps": 99}}
+    plugin = ReasonixSubagentsPlugin(FakeCtx(), initial)
+    # Star sets self.config = initial in __init__; simulate a real reload
+    # that resets to {} (e.g. user clicked "reset to defaults").
+    plugin.config = {}
+    captured_cfg.append(plugin.config_holder.get())
+    assert captured_cfg[-1] == {}, (
+        "empty plugin.config must not silently fall back to initial; "
+        f"got {captured_cfg[-1]!r}"
+    )
+
+
+# --- Review 4 guard: empty diff snapshot is an error, not a silent pass ---
+
+
+@pytest.mark.asyncio
+async def test_deep_review_snapshot_empty_diff_is_error(monkeypatch):
+    """When git diff produces no output (clean repo) and no pasted diff is
+    given, deep_review must return an explicit error rather than passing an
+    empty task to the reviewers."""
+    from dataclasses import dataclass, field
+
+    from reasonix.config import ConfigHolder
+    from reasonix.tools.deep_review import DeepReviewTool
+    from reasonix.tools.git_read import ReasonixGitReadTool
+
+    git_tool = ReasonixGitReadTool()
+    ch = ConfigHolder({})
+    tool = DeepReviewTool(
+        spec=SPECS["deep_review"], config_holder=ch, git_tool=git_tool
+    )
+
+    # Fake git_execute to return an "empty diff" success: only the command
+    # prefix line, nothing else.
+    async def fake_git(*_a, **_k):
+        from reasonix.tools.git_read import GitResult
+
+        return GitResult(True, "$ git --no-pager diff\n")
+
+    monkeypatch.setattr("reasonix.tools.deep_review.git_execute", fake_git)
+
+    # Provide a code-read tool so the reviewer toolset isn't short-circuited
+    # by the empty-toolset check before reaching the snapshot path.
+    @dataclass
+    class ReadTool:
+        name: str = "astrbot_file_read_tool"
+        description: str = ""
+        active: bool = True
+
+    @dataclass
+    class FakeMgr:
+        func_list: list = field(default_factory=lambda: [ReadTool()])
+
+        def get_func(self, name):
+            for t in self.func_list:
+                if t.name == name:
+                    return t
+            return None
+
+    class _Event:
+        unified_msg_origin = "test:1"
+
+    class _Core:
+        pass
+
+    class _Inner:
+        event = _Event()
+        context = _Core()
+
+    class Ctx:
+        def get_llm_tool_manager(self):
+            return FakeMgr()
+
+        def get_current_chat_provider_id(self, origin):
+            return "p_test"
+
+    class AgentCtx:
+        def __init__(self):
+            self.context = Ctx()
+            self.event = _Event()
+
+    class CtxW:
+        def __init__(self):
+            self.context = AgentCtx()
+
+    result = await tool.call(CtxW(), task="audit")
+    assert isinstance(result, str)
+    assert result.startswith("error:"), result
+    assert "no changes" in result, result
+
+
+# --- Review 5 guard: git_guard rejects -Dfoo / -dbar style mutation forms ---
+
+
+def test_git_guard_rejects_glued_short_mutation_options():
+    """Git parses '-Dfoo' as '-D foo' (delete branch foo). The validator
+    must reject glued forms in addition to standalone short options."""
+    from reasonix.git_guard import validate
+
+    # Each subcommand's mutation options live in different lists; the test
+    # only asserts the ones that actually apply to that subcommand.
+    cases = [
+        ("branch", ["-Dfoo", "-dbar", "-mmain", "-Mfeature", "-cfoo"]),
+        ("tag", ["-dfoo", "-mmain", "-ffoo", "-sfoo"]),
+    ]
+    for sub, args in cases:
+        for arg in args:
+            _, error = validate(sub, [arg])
+            assert error is not None, f"{sub} {arg} should be rejected"
+            assert "read-only" in error or "forbidden" in error, (
+                f"{sub} {arg}: unexpected error {error!r}"
+            )
+
+
+def test_git_guard_rejects_long_equals_mutation():
+    """--delete=foo must be rejected as a delete-branch mutation."""
+    from reasonix.git_guard import validate
+
+    _, error = validate("branch", ["--delete=feature"])
+    assert error is not None

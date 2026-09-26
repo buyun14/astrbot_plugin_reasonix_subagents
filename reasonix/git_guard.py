@@ -140,11 +140,40 @@ def _split_options(
     return flags, positional
 
 
+def _is_mutation_opt(arg: str, mutation_opts: tuple[str, ...]) -> str | None:
+    """Return the offending mutation option if ``arg`` matches one.
+
+    Git parses short options as a cluster: ``-Dfoo`` is equivalent to
+    ``-D foo`` and ``-dbar`` to ``-d bar``. A naive ``flag in mutation_opts``
+    check accepts these glued forms and lets a delete-through-branch
+    request slip past the read-only policy. We reject:
+    - exact match (the standalone short or long option, e.g. ``-D``);
+    - long option followed by ``=`` value (``--delete=foo``);
+    - short option glued with additional characters (``-Dfoo``).
+    """
+    for opt in mutation_opts:
+        if arg == opt:
+            return opt
+        if opt.startswith("--") and arg.startswith(opt + "="):
+            return opt
+        if (
+            opt.startswith("-")
+            and not opt.startswith("--")
+            and arg.startswith(opt)
+            and len(arg) > len(opt)
+        ):
+            return opt
+    return None
+
+
 def _validate_branch(args: list[str]) -> None:
     flags, positional = _split_options(args, _BRANCH_VALUE_OPTS)
     for flag in flags:
-        if flag in _BRANCH_MUTATION_OPTS:
-            raise GitArgError(f"branch only allows read-only listing forms: {flag}")
+        offending = _is_mutation_opt(flag, _BRANCH_MUTATION_OPTS)
+        if offending is not None:
+            raise GitArgError(
+                f"branch only allows read-only listing forms: {flag} (matches {offending})"
+            )
         if flag.startswith("--set-upstream-to="):
             raise GitArgError("branch --set-upstream-to is not read-only")
     listing = any(f in _BRANCH_LIST_FLAGS for f in flags)
@@ -156,8 +185,11 @@ def _validate_branch(args: list[str]) -> None:
 def _validate_tag(args: list[str]) -> None:
     flags, positional = _split_options(args, _TAG_VALUE_OPTS)
     for flag in flags:
-        if flag in _TAG_MUTATION_OPTS:
-            raise GitArgError(f"tag only allows read-only listing forms: {flag}")
+        offending = _is_mutation_opt(flag, _TAG_MUTATION_OPTS)
+        if offending is not None:
+            raise GitArgError(
+                f"tag only allows read-only listing forms: {flag} (matches {offending})"
+            )
     listing = any(f in ("--list", "-l") for f in flags)
     if not listing and positional:
         raise GitArgError("tag <name> is not read-only; use tag --list [pattern]")

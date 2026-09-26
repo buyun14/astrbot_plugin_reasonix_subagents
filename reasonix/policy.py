@@ -61,6 +61,11 @@ class Policy:
     provider_id: str
     aggregator_max_steps: int | None = None
     overall_timeout: int | None = None
+    # Union of global + per-subagent excluded_tools. Tools (auto-discovered
+    # or otherwise) whose name is in this set must never be added to a
+    # subagent's toolset. Computed once per resolve_policy() call so all
+    # tool-selection paths consult the same set.
+    banned_tool_names: frozenset[str] = frozenset()
 
 
 _EXPLORE_DESC = (
@@ -272,6 +277,7 @@ def resolve_policy(cfg: dict, spec: AgentSpec) -> Policy:
         provider_id=provider_id,
         aggregator_max_steps=agg_steps,
         overall_timeout=overall,
+        banned_tool_names=frozenset(banned),
     )
 
 
