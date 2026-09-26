@@ -12,8 +12,6 @@ from __future__ import annotations
 CODE_READ_TOOLS: tuple[str, ...] = (
     "astrbot_file_read_tool",
     "astrbot_grep_tool",
-    "astrbot_execute_shell",
-    "astrbot_shell_session",
 )
 
 WEB_TOOLS: tuple[str, ...] = (

@@ -78,10 +78,10 @@ async def execute(
     if repo_path:
         try:
             cwd = _resolve_repo(repo_path, workspace)
-        except OSError:
-            return GitResult(False, f"error: repo_path does not exist: {repo_path}")
         except PermissionError as exc:
             return GitResult(False, f"error: {exc}")
+        except OSError:
+            return GitResult(False, f"error: repo_path does not exist: {repo_path}")
 
     command = ["git", "--no-pager", subcommand, *args]
     try:
