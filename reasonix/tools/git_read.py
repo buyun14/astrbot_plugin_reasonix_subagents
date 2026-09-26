@@ -16,9 +16,9 @@ from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.tools.computer_tools.util import workspace_root_for_context
 
-from reasonix.constants import MAX_GIT_OUTPUT, MAX_GIT_TIMEOUT_SECONDS
-from reasonix import git_guard
-from reasonix.git_guard import READ_ONLY_SUBCOMMANDS
+from ..constants import MAX_GIT_OUTPUT, MAX_GIT_TIMEOUT_SECONDS
+from .. import git_guard
+from ..git_guard import READ_ONLY_SUBCOMMANDS
 
 # Minimal env forwarded to git: no whole os.environ (avoids leaking host env).
 _ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TZ")

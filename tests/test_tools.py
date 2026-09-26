@@ -26,12 +26,18 @@ from __future__ import annotations
 
 import pytest
 
-from reasonix.config import ConfigHolder
-from reasonix.policy import SPECS
-from reasonix.tools.agents import build_tools
-from reasonix.tools.base import ReasonixSubagentTool, build_toolset
-from reasonix.tools.deep_review import DeepReviewTool
-from reasonix.tools.git_read import ReasonixGitReadTool, execute as git_execute
+from astrbot_plugin_reasonix_subagents.reasonix.config import ConfigHolder
+from astrbot_plugin_reasonix_subagents.reasonix.policy import SPECS
+from astrbot_plugin_reasonix_subagents.reasonix.tools.agents import build_tools
+from astrbot_plugin_reasonix_subagents.reasonix.tools.base import (
+    ReasonixSubagentTool,
+    build_toolset,
+)
+from astrbot_plugin_reasonix_subagents.reasonix.tools.deep_review import DeepReviewTool
+from astrbot_plugin_reasonix_subagents.reasonix.tools.git_read import (
+    ReasonixGitReadTool,
+    execute as git_execute,
+)
 
 
 # --- B2 guard: tool classes must instantiate without pydantic errors ---
@@ -73,7 +79,7 @@ def test_git_guard_module_is_imported():
     """B1 guard: without 'from reasonix import git_guard' the validate()
     call inside execute() raises NameError at runtime. This static check
     catches that refactor regression immediately."""
-    from reasonix.tools import git_read
+    from astrbot_plugin_reasonix_subagents.reasonix.tools import git_read
 
     assert hasattr(git_read, "git_guard"), (
         "reasonix.tools.git_read no longer has the 'git_guard' module "
@@ -116,7 +122,7 @@ def test_build_toolset_filters_banned_extras():
         def get_func(self, name):
             return None
 
-    from reasonix.policy import resolve_policy
+    from astrbot_plugin_reasonix_subagents.reasonix.policy import resolve_policy
 
     pol = resolve_policy(cfg, SPECS["explore"])
     ts = build_toolset(Mgr(), pol, SPECS["explore"], git, cfg)
@@ -140,7 +146,7 @@ def test_deep_review_timeout_covers_aggregator():
     """
     import asyncio
 
-    from reasonix.tools import deep_review as dr_mod
+    from astrbot_plugin_reasonix_subagents.reasonix.tools import deep_review as dr_mod
 
     overall_budget = 0.1
 
@@ -185,7 +191,7 @@ async def test_git_execute_propagates_return_code(monkeypatch):
     import asyncio
     from dataclasses import dataclass
 
-    from reasonix.tools import git_read
+    from astrbot_plugin_reasonix_subagents.reasonix.tools import git_read
 
     @dataclass
     class FakeProc:
@@ -238,7 +244,7 @@ async def test_git_execute_zero_exit_returns_ok(monkeypatch):
     """Counterpart: success exit must still surface as ok=True."""
     from dataclasses import dataclass
 
-    from reasonix.tools import git_read
+    from astrbot_plugin_reasonix_subagents.reasonix.tools import git_read
 
     @dataclass
     class FakeProc:
@@ -342,7 +348,9 @@ def test_discovery_rejects_named_web_tool_with_side_effect_description():
     """
     from dataclasses import dataclass
 
-    from reasonix.discovery import is_web_readonly_tool
+    from astrbot_plugin_reasonix_subagents.reasonix.discovery import (
+        is_web_readonly_tool,
+    )
 
     @dataclass
     class FakeTool:
@@ -364,9 +372,11 @@ def test_build_toolset_excluded_filters_auto_discovered():
     """A blacklisted tool that ALSO matches web discovery must not be added."""
     from dataclasses import dataclass
 
-    from reasonix.policy import resolve_policy
-    from reasonix.tools.base import build_toolset
-    from reasonix.tools.git_read import ReasonixGitReadTool
+    from astrbot_plugin_reasonix_subagents.reasonix.policy import resolve_policy
+    from astrbot_plugin_reasonix_subagents.reasonix.tools.base import build_toolset
+    from astrbot_plugin_reasonix_subagents.reasonix.tools.git_read import (
+        ReasonixGitReadTool,
+    )
 
     @dataclass
     class FakeTool:
@@ -408,7 +418,7 @@ def test_build_toolset_excluded_filters_auto_discovered():
 def test_plugin_empty_config_not_fallback_to_initial(monkeypatch):
     """Resetting plugin.config to {} must surface immediately, not silently
     fall back to the initial non-empty config."""
-    from main import ReasonixSubagentsPlugin
+    from astrbot_plugin_reasonix_subagents.main import ReasonixSubagentsPlugin
 
     captured_cfg: list[dict] = []
 
@@ -428,9 +438,11 @@ def test_plugin_empty_config_not_fallback_to_initial(monkeypatch):
             return None
 
     # Stub out build_tools + ConfigHolder so we only exercise the closure.
-    monkeypatch.setattr("main.ConfigHolder", FakeHolder)
     monkeypatch.setattr(
-        "main.build_tools",
+        "astrbot_plugin_reasonix_subagents.main.ConfigHolder", FakeHolder
+    )
+    monkeypatch.setattr(
+        "astrbot_plugin_reasonix_subagents.main.build_tools",
         lambda _holder: (None, [FakeTool()]),
     )
 
@@ -456,9 +468,13 @@ async def test_deep_review_snapshot_empty_diff_is_error(monkeypatch):
     empty task to the reviewers."""
     from dataclasses import dataclass, field
 
-    from reasonix.config import ConfigHolder
-    from reasonix.tools.deep_review import DeepReviewTool
-    from reasonix.tools.git_read import ReasonixGitReadTool
+    from astrbot_plugin_reasonix_subagents.reasonix.config import ConfigHolder
+    from astrbot_plugin_reasonix_subagents.reasonix.tools.deep_review import (
+        DeepReviewTool,
+    )
+    from astrbot_plugin_reasonix_subagents.reasonix.tools.git_read import (
+        ReasonixGitReadTool,
+    )
 
     git_tool = ReasonixGitReadTool()
     ch = ConfigHolder({})
@@ -469,11 +485,14 @@ async def test_deep_review_snapshot_empty_diff_is_error(monkeypatch):
     # Fake git_execute to return an "empty diff" success: only the command
     # prefix line, nothing else.
     async def fake_git(*_a, **_k):
-        from reasonix.tools.git_read import GitResult
+        from astrbot_plugin_reasonix_subagents.reasonix.tools.git_read import GitResult
 
         return GitResult(True, "$ git --no-pager diff\n")
 
-    monkeypatch.setattr("reasonix.tools.deep_review.git_execute", fake_git)
+    monkeypatch.setattr(
+        "astrbot_plugin_reasonix_subagents.reasonix.tools.deep_review.git_execute",
+        fake_git,
+    )
 
     # Provide a code-read tool so the reviewer toolset isn't short-circuited
     # by the empty-toolset check before reaching the snapshot path.
@@ -531,7 +550,7 @@ async def test_deep_review_snapshot_empty_diff_is_error(monkeypatch):
 def test_git_guard_rejects_glued_short_mutation_options():
     """Git parses '-Dfoo' as '-D foo' (delete branch foo). The validator
     must reject glued forms in addition to standalone short options."""
-    from reasonix.git_guard import validate
+    from astrbot_plugin_reasonix_subagents.reasonix.git_guard import validate
 
     # Each subcommand's mutation options live in different lists; the test
     # only asserts the ones that actually apply to that subcommand.
@@ -550,7 +569,7 @@ def test_git_guard_rejects_glued_short_mutation_options():
 
 def test_git_guard_rejects_long_equals_mutation():
     """--delete=foo must be rejected as a delete-branch mutation."""
-    from reasonix.git_guard import validate
+    from astrbot_plugin_reasonix_subagents.reasonix.git_guard import validate
 
     _, error = validate("branch", ["--delete=feature"])
     assert error is not None

@@ -12,15 +12,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from reasonix import constants as C
-from reasonix.config import (
+from . import constants as C
+from .config import (
     advanced_override,
     as_str_list,
     clamp_int,
     defaults_section,
     subagent_override,
 )
-from reasonix.prompts import (
+from .prompts import (
     DEEP_REVIEW_AGGREGATOR_PROMPT,
     EXPLORE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,

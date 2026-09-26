@@ -16,11 +16,11 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from reasonix import tasks as task_builder
-from reasonix.config import ConfigHolder
-from reasonix.discovery import discover_web_tools
-from reasonix.policy import AgentSpec, Policy, resolve_policy
-from reasonix.runner import resolve_provider_id, run_agent
+from .. import tasks as task_builder
+from ..config import ConfigHolder
+from ..discovery import discover_web_tools
+from ..policy import AgentSpec, Policy, resolve_policy
+from ..runner import resolve_provider_id, run_agent
 
 logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
 

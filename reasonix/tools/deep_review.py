@@ -12,17 +12,17 @@ from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
-from reasonix import tasks as task_builder
-from reasonix.constants import MAX_PARALLEL_REVIEWERS
-from reasonix.policy import (
+from .. import tasks as task_builder
+from ..constants import MAX_PARALLEL_REVIEWERS
+from ..policy import (
     GIT_TOOL_NAME,
     effective_bans,
     resolve_policy,
 )
-from reasonix.prompts import DEEP_REVIEW_AGGREGATOR_PROMPT, DEEP_REVIEW_SPECIALISTS
-from reasonix.runner import resolve_provider_id, run_agent
-from reasonix.tools.base import ReasonixSubagentTool, build_toolset
-from reasonix.tools.git_read import execute as git_execute
+from ..prompts import DEEP_REVIEW_AGGREGATOR_PROMPT, DEEP_REVIEW_SPECIALISTS
+from ..runner import resolve_provider_id, run_agent
+from ..tools.base import ReasonixSubagentTool, build_toolset
+from ..tools.git_read import execute as git_execute
 
 
 def _strip_command_prefix(text: str) -> str:

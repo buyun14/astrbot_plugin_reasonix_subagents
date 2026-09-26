@@ -7,9 +7,9 @@ caught. These tests fail if a prompt starts referencing tools that are not
 configured for the sub-agent.
 """
 
-from reasonix.constants import CODE_READ_TOOLS
+from astrbot_plugin_reasonix_subagents.reasonix.constants import CODE_READ_TOOLS
 
-from reasonix.prompts.subagents import (
+from astrbot_plugin_reasonix_subagents.reasonix.prompts.subagents import (
     EXPLORE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
 )
@@ -42,5 +42,9 @@ def test_prompts_only_reference_tools_the_subagent_has():
     for prompt in (EXPLORE_SYSTEM_PROMPT, RESEARCH_SYSTEM_PROMPT):
         for fragment in ("file-read", "file_read", "grep", "git"):
             if fragment in prompt.lower():
-                matched = any(fragment.replace("-", "_") in t or fragment in t for t in allowed)
-                assert matched, f"prompt references {fragment!r} but toolset lacks it: {sorted(allowed)}"
+                matched = any(
+                    fragment.replace("-", "_") in t or fragment in t for t in allowed
+                )
+                assert matched, (
+                    f"prompt references {fragment!r} but toolset lacks it: {sorted(allowed)}"
+                )

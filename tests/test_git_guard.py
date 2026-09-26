@@ -1,6 +1,10 @@
 import pytest
 
-from reasonix.git_guard import READ_ONLY_SUBCOMMANDS, sanitize_args, validate
+from astrbot_plugin_reasonix_subagents.reasonix.git_guard import (
+    READ_ONLY_SUBCOMMANDS,
+    sanitize_args,
+    validate,
+)
 
 
 def _ok(sub, args):

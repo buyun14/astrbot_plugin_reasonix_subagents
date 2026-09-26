@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from reasonix.config import ConfigHolder
-from reasonix.policy import SPECS, AgentSpec
-from reasonix.tools.base import ReasonixSubagentTool
-from reasonix.tools.deep_review import DeepReviewTool
-from reasonix.tools.git_read import ReasonixGitReadTool
+from ..config import ConfigHolder
+from ..policy import SPECS, AgentSpec
+from ..tools.base import ReasonixSubagentTool
+from ..tools.deep_review import DeepReviewTool
+from ..tools.git_read import ReasonixGitReadTool
 
 _STANDARD = ("explore", "research", "review", "security_review")
 

@@ -1,6 +1,10 @@
-from reasonix.config import ConfigHolder
-from reasonix.constants import WEB_TOOLS
-from reasonix.policy import SPECS, effective_bans, resolve_policy
+from astrbot_plugin_reasonix_subagents.reasonix.config import ConfigHolder
+from astrbot_plugin_reasonix_subagents.reasonix.constants import WEB_TOOLS
+from astrbot_plugin_reasonix_subagents.reasonix.policy import (
+    SPECS,
+    effective_bans,
+    resolve_policy,
+)
 
 
 def _pol(name, cfg):

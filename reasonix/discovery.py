@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from reasonix import constants as C
-from reasonix.config import advanced_override
+from . import constants as C
+from .config import advanced_override
 
 
 def _skip_set(cfg: dict[str, Any]) -> frozenset[str]:
