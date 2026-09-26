@@ -67,3 +67,22 @@ def test_main_imports_as_package_module():
     module = importlib.import_module(f"{PKG}.main")
     assert module.__package__ == PKG, module.__package__
     assert hasattr(module, "ReasonixSubagentsPlugin")
+
+
+# Claims the docs must not make about the read-only sub-agent toolset. The
+# security pass removed the shell tools; prose describing them drifts just as
+# silently as the prompts did.
+FORBIDDEN_DOC_CLAIMS = ("只读 shell", "shell 工具", "grep/shell", "文件/grep/shell")
+
+
+def test_docs_match_the_shell_free_toolset():
+    """README/metadata must not advertise a read-only shell tool."""
+    offenders = []
+    for name in ("README.md", "metadata.yaml"):
+        text = (PLUGIN_ROOT / name).read_text()
+        for claim in FORBIDDEN_DOC_CLAIMS:
+            if claim in text:
+                offenders.append(f"{name}: {claim!r}")
+    assert not offenders, (
+        f"docs advertise tools the sub-agents do not have: {offenders}"
+    )

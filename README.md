@@ -15,9 +15,9 @@
 
 | 工具 | 作用 | 只读工具集 |
 | --- | --- | --- |
-| `explore` | 只读代码库调查，返回一条蒸馏结论 | file-read / grep / 只读 shell / 只读 git |
+| `explore` | 只读代码库调查，返回一条蒸馏结论 | file-read / grep / 只读 git（`ls-files` 探路） |
 | `research` | 代码 + 网页交叉研究 | 上 + 已配置的 web 搜索/extract |
-| `review` | 对 workspace 内 git 仓库改动做代码评审 | file-read / grep / 只读 git / 只读 shell |
+| `review` | 对 workspace 内 git 仓库改动做代码评审 | file-read / grep / 只读 git |
 | `security-review` | 安全视角评审（威胁模型分级 + 危险 API 清单） | 同 review |
 | `deep_review` | 并行多专家评审 + 置信度门禁（更细更慢） | 同 review（多轮） |
 
@@ -58,7 +58,8 @@
 
 ## 前置条件与限制
 
-- **explore / review 的代码读取**依赖 Computer Use 的文件/grep/shell 工具：
+- **explore / review 的代码读取**依赖 Computer Use 的文件/grep 工具
+  （结构探测走只读 git 的 `ls-files`；子代理没有 shell）：
   在 WebUI → 模型提供商 → 开启 Computer Use（`computer_use_runtime` = local/sandbox），
   否则子代理只会拿到 `reasonix_git_read`，读取类任务无法完成（子代理会明确回报）。
 - **review / security-review 需要 git 仓库**：把仓库放进 AstrBot 会话 workspace
