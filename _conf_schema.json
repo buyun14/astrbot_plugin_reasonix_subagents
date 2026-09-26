@@ -49,8 +49,14 @@
       "explore": {
         "type": "object",
         "description": "只读代码调研子代理",
-        "hint": "改动后热生效。",
+        "hint": "改动 enabled / provider_id 后需重载插件；其余字段热生效。",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "是否注册该工具",
+            "hint": "改动后需重载插件才生效。",
+            "default": true
+          },
           "max_steps": {
             "type": "int",
             "description": "子代理最大推理步数（0 表示沿用 defaults）",
@@ -77,14 +83,27 @@
             "type": "list",
             "description": "本子代理单独排除的工具",
             "default": []
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "指定模型 Provider",
+            "hint": "留空 = 沿用当前会话模型。注意：廉价模型可能导致调研质量下降。",
+            "default": "",
+            "_special": "select_provider"
           }
         }
       },
       "research": {
         "type": "object",
         "description": "带联网能力的调研子代理",
-        "hint": "改动后热生效。",
+        "hint": "改动 enabled / provider_id 后需重载插件；其余字段热生效。",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "是否注册该工具",
+            "hint": "改动后需重载插件才生效。",
+            "default": true
+          },
           "max_steps": {
             "type": "int",
             "description": "子代理最大推理步数（0 表示沿用 defaults）",
@@ -111,14 +130,27 @@
             "type": "list",
             "description": "本子代理单独排除的工具",
             "default": []
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "指定模型 Provider",
+            "hint": "留空 = 沿用当前会话模型。注意：廉价模型可能导致调研质量下降。",
+            "default": "",
+            "_special": "select_provider"
           }
         }
       },
       "review": {
         "type": "object",
         "description": "只读代码评审子代理",
-        "hint": "改动后热生效。",
+        "hint": "改动 enabled / provider_id 后需重载插件；其余字段热生效。",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "是否注册该工具",
+            "hint": "改动后需重载插件才生效。",
+            "default": true
+          },
           "max_steps": {
             "type": "int",
             "description": "子代理最大推理步数（0 表示沿用 defaults）",
@@ -145,14 +177,27 @@
             "type": "list",
             "description": "本子代理单独排除的工具",
             "default": []
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "指定模型 Provider",
+            "hint": "留空 = 沿用当前会话模型。注意：廉价模型可能导致评审质量下降。",
+            "default": "",
+            "_special": "select_provider"
           }
         }
       },
       "security_review": {
         "type": "object",
         "description": "只读安全评审子代理",
-        "hint": "改动后热生效。",
+        "hint": "改动 enabled / provider_id 后需重载插件；其余字段热生效。",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "是否注册该工具",
+            "hint": "改动后需重载插件才生效。",
+            "default": true
+          },
           "max_steps": {
             "type": "int",
             "description": "子代理最大推理步数（0 表示沿用 defaults）",
@@ -179,18 +224,41 @@
             "type": "list",
             "description": "本子代理单独排除的工具",
             "default": []
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "指定模型 Provider",
+            "hint": "留空 = 沿用当前会话模型。注意：廉价模型可能导致评审质量下降。",
+            "default": "",
+            "_special": "select_provider"
           }
         }
       },
       "deep_review": {
         "type": "object",
         "description": "并行多专家评审 + 置信度门禁",
-        "hint": "改动后热生效。",
+        "hint": "改动 enabled / provider_id 后需重载插件；其余字段热生效。",
         "items": {
+          "enabled": {
+            "type": "bool",
+            "description": "是否注册该工具",
+            "hint": "改动后需重载插件才生效。",
+            "default": true
+          },
           "max_steps": {
             "type": "int",
             "description": "每个 reviewer 的最大推理步数（0 表示沿用 defaults；内置默认 8）",
             "default": 8,
+            "slider": {
+              "min": 0,
+              "max": 50,
+              "step": 1
+            }
+          },
+          "aggregator_max_steps": {
+            "type": "int",
+            "description": "aggregator 的最大推理步数（0 表示沿用内置默认 4）",
+            "default": 0,
             "slider": {
               "min": 0,
               "max": 50,
@@ -213,8 +281,47 @@
             "type": "list",
             "description": "本子代理单独排除的工具",
             "default": []
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "指定模型 Provider",
+            "hint": "留空 = 沿用当前会话模型。注意：廉价模型可能导致评审质量下降。",
+            "default": "",
+            "_special": "select_provider"
           }
         }
+      }
+    }
+  },
+
+  "advanced": {
+    "type": "object",
+    "description": "⚠️ 高风险区",
+    "hint": "这些配置影响「只读」防护的工作方式，错误放宽可能导致子代理获得有副作用的工具。除非你清楚自己在做什么，否则请保持为空。",
+    "items": {
+      "web_tool_names": {
+        "type": "list",
+        "description": "内置网页工具名清单",
+        "hint": "覆盖代码中的 _WEB_TOOLS。留空 = 使用内置默认；非空 = 整体替换。",
+        "default": []
+      },
+      "web_markers": {
+        "type": "list",
+        "description": "⚠️ 「可作为只读网页工具」的名称/描述特征词",
+        "hint": "覆盖代码中的 _WEB_READ_MARKERS。留空 = 使用内置默认；非空 = 整体替换。放宽此列表可能导致子代理获得有副作用的工具。",
+        "default": []
+      },
+      "side_effect_markers": {
+        "type": "list",
+        "description": "⚠️ 副作用特征词黑名单",
+        "hint": "覆盖代码中的 _SIDE_EFFECT_MARKERS。留空 = 使用内置默认；非空 = 整体替换。收紧此列表会削弱防护。",
+        "default": []
+      },
+      "skip_discovery": {
+        "type": "list",
+        "description": "禁止被自动发现的具体工具名",
+        "hint": "覆盖代码中的 _SKIP_DISCOVERY_TOOLS。留空 = 使用内置默认；非空 = 整体替换。",
+        "default": []
       }
     }
   }

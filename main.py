@@ -82,6 +82,18 @@ def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
     return max(low, min(high, num))
 
 
+def _subagent_enabled(name: str) -> bool:
+    """Return whether the subagent named ``name`` should be registered."""
+    cfg = _plugin_config()
+    if not isinstance(cfg.get("subagents"), dict):
+        return True
+    over = cfg["subagents"].get(name)
+    if not isinstance(over, dict):
+        return True
+    enabled = over.get("enabled", True)
+    return bool(enabled) if isinstance(enabled, bool) else True
+
+
 # Tool names the subagents may expose. Resolution happens at call time against
 # the live FunctionToolManager, so tools that are not configured/active are
 # simply skipped (e.g. Computer Use or a specific web-search provider).
@@ -169,6 +181,26 @@ _SKIP_DISCOVERY_TOOLS: frozenset[str] = frozenset(
 )
 
 
+def _marker_override(key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Return advanced override list for ``key`` or ``default`` if not configured.
+
+    The ``advanced`` section fully *replaces* (not extends) the built-in
+    markers; an empty list means "use built-ins". This is deliberate: marker
+    lists are a security boundary, and silent append would make it hard to
+    audit what is currently in scope.
+    """
+    cfg = _plugin_config()
+    advanced = cfg.get("advanced") if isinstance(cfg.get("advanced"), dict) else {}
+    value = advanced.get(key) if isinstance(advanced, dict) else None
+    out = _as_str_list(value)
+    return out if out else default
+
+
+def _skip_set_override(default: frozenset[str]) -> frozenset[str]:
+    out = _marker_override("skip_discovery", tuple(default))
+    return frozenset(out)
+
+
 def _is_web_readonly_tool(tool: FunctionTool) -> bool:
     """True for an active tool that looks like a read-only web/search/extract tool.
 
@@ -177,6 +209,10 @@ def _is_web_readonly_tool(tool: FunctionTool) -> bool:
     exclude anything that looks side-effecting. Best-effort heuristic: if a
     plugin tool is not detected, add its exact name to the subagent's
     ``allowed_tools`` (e.g. ``_WEB_TOOLS``) instead.
+
+    Marker lists are read from ``advanced`` on every call (overrides only -
+    empty means built-in). This is intentional: the markers are a security
+    boundary and silent append would make the boundary unauditable.
 
     Args:
         tool: The candidate tool.
@@ -187,11 +223,14 @@ def _is_web_readonly_tool(tool: FunctionTool) -> bool:
     if not bool(getattr(tool, "active", True)):
         return False
     name = (tool.name or "").lower().strip()
-    if not name or name in _SKIP_DISCOVERY_TOOLS or name.startswith("transfer_to_"):
+    skip_set = _skip_set_override(_SKIP_DISCOVERY_TOOLS)
+    if not name or name in skip_set or name.startswith("transfer_to_"):
         return False
-    if any(marker in name for marker in _SIDE_EFFECT_MARKERS):
+    side_effect_markers = _marker_override("side_effect_markers", _SIDE_EFFECT_MARKERS)
+    if any(marker in name for marker in side_effect_markers):
         return False
-    if any(marker in name for marker in _WEB_READ_MARKERS):
+    web_markers = _marker_override("web_markers", _WEB_READ_MARKERS)
+    if any(marker in name for marker in web_markers):
         return True
     description = (tool.description or "").lower()
     return any(
@@ -669,12 +708,15 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
         if not isinstance(discover_web, bool):
             discover_web = bool(base.get("discover_web", self.discover_web_readonly))
 
+        provider_id = str(over.get("provider_id") or "").strip()
+
         return {
             "allowed_tools": allowed_tuple,
             "extra_tools": tuple(base.get("extra_tools", self.extra_tools)),
             "max_steps": steps,
             "timeout": timeout,
             "discover_web": discover_web,
+            "provider_id": provider_id,
         }
 
     def _build_toolset(self, tool_mgr: Any) -> tuple[ToolSet, list[str]]:
@@ -765,7 +807,9 @@ class ReasonixSubagentTool(FunctionTool[AstrAgentContext]):
                 "configure a web-search provider. "
             )
 
-        provider_id = await ctx.get_current_chat_provider_id(event.unified_msg_origin)
+        provider_id = policy["provider_id"] or await ctx.get_current_chat_provider_id(
+            event.unified_msg_origin
+        )
         llm_resp = await ctx.tool_loop_agent(
             event=event,
             chat_provider_id=provider_id,
@@ -1141,7 +1185,9 @@ class DeepReviewTool(ReasonixSubagentTool):
             f"{diff_text}\n```"
         )
 
-        provider_id = await ctx.get_current_chat_provider_id(event.unified_msg_origin)
+        provider_id = policy["provider_id"] or await ctx.get_current_chat_provider_id(
+            event.unified_msg_origin
+        )
         semaphore = asyncio.Semaphore(_MAX_PARALLEL_REVIEWERS)
         reviewer_max_steps = policy["max_steps"]
         tool_timeout = policy["timeout"]
@@ -1172,6 +1218,23 @@ class DeepReviewTool(ReasonixSubagentTool):
         reports_block = "\n\n".join(
             f"## Reviewer: {name}\n{body}" for name, body in reviewer_results
         )
+        # aggregator_max_steps: explicit per-subagent override > builtin (_MAX_AGGREGATOR_STEPS).
+        cfg = _plugin_config()
+        subagents = (
+            cfg.get("subagents") if isinstance(cfg.get("subagents"), dict) else {}
+        )
+        over = (
+            subagents.get("deep_review")
+            if isinstance(subagents.get("deep_review"), dict)
+            else {}
+        )
+        agg_raw = over.get("aggregator_max_steps") if isinstance(over, dict) else None
+        fallback_agg = int(_BUILTIN_POLICY["deep_review"]["aggregator_max_steps"])
+        if isinstance(agg_raw, int) and agg_raw > 0:
+            aggregator_max_steps = _clamp_int(agg_raw, 1, 50, fallback_agg)
+        else:
+            aggregator_max_steps = fallback_agg
+
         final_text = await self._run_agent(
             ctx,
             event,
@@ -1179,7 +1242,7 @@ class DeepReviewTool(ReasonixSubagentTool):
             system_prompt=_DEEP_REVIEW_AGGREGATOR_PROMPT,
             prompt=f"{shared_task}\n\nSpecialist reports to merge:\n\n{reports_block}",
             tools=None,
-            max_steps=_MAX_AGGREGATOR_STEPS,
+            max_steps=aggregator_max_steps,
             tool_timeout=tool_timeout,
         )
         return final_text or "error: the aggregator returned no final review."
@@ -1239,26 +1302,41 @@ _BUILTIN_POLICY: dict[str, dict[str, Any]] = {
 class ReasonixSubagentsPlugin(Star):
     """Registers the Reasonix subagent delegation tools (incl. deep_review) on the main LLM."""
 
+    _TOOL_REGISTRY: tuple[tuple[str, FunctionTool], ...] = (
+        ("explore", EXPLORE_TOOL),
+        ("research", RESEARCH_TOOL),
+        ("review", REVIEW_TOOL),
+        ("security_review", SECURITY_REVIEW_TOOL),
+        ("deep_review", DEEP_REVIEW_TOOL),
+    )
+
     def __init__(self, context: Context, config: Any = None) -> None:
         super().__init__(context)
         self.config = config or {}
         # Register so module-level tool instances can read the latest config
-        # via ``_plugin_config()`` on every call. Keep the list bounded (one
-        # entry per reload) by dropping any prior reference to ``self``.
+        # via ``_plugin_config()``. Keep the list bounded (one entry per
+        # reload) by dropping any prior reference to ``self``.
         _PLUGIN_REF[:] = [p for p in _PLUGIN_REF if p is not self]
         _PLUGIN_REF.append(self)
         try:
-            self.context.add_llm_tools(
-                EXPLORE_TOOL,
-                RESEARCH_TOOL,
-                REVIEW_TOOL,
-                SECURITY_REVIEW_TOOL,
-                DEEP_REVIEW_TOOL,
-            )
-            self.logger.info(
-                "Registered Reasonix subagent tools: explore, research, review, "
-                "security_review, deep_review."
-            )
+            enabled_tools = [
+                tool for name, tool in self._TOOL_REGISTRY if _subagent_enabled(name)
+            ]
+            disabled = [
+                name
+                for name, _tool in self._TOOL_REGISTRY
+                if not _subagent_enabled(name)
+            ]
+            self.context.add_llm_tools(*enabled_tools)
+            names = ", ".join(t.name for t in enabled_tools)
+            if disabled:
+                self.logger.info(
+                    "Registered Reasonix subagent tools: %s (disabled by config: %s).",
+                    names,
+                    ", ".join(disabled),
+                )
+            else:
+                self.logger.info("Registered Reasonix subagent tools: %s.", names)
         except Exception:  # noqa: BLE001
             self.logger.exception("Failed to register Reasonix subagent tools.")
 
@@ -1266,14 +1344,7 @@ class ReasonixSubagentsPlugin(Star):
         "reasonix_subagents", alias={"reasonix-subagents", "reasonix子代理"}
     )
     async def reasonix_subagents_status(self, event: AstrMessageEvent):
-        """Show the registered Reasonix subagent tools and their resolved policy."""
-        tools = (
-            EXPLORE_TOOL,
-            RESEARCH_TOOL,
-            REVIEW_TOOL,
-            SECURITY_REVIEW_TOOL,
-            DEEP_REVIEW_TOOL,
-        )
+        """Show the registered Reasonix subagent tools and their current policy."""
         lines = [
             "Reasonix 子代理（agent-as-tool）：",
             "- explore: 只读代码库调查",
@@ -1284,19 +1355,24 @@ class ReasonixSubagentsPlugin(Star):
             "",
             "当前生效策略：",
         ]
-        for tool in tools:
+        for name, _tool in self._TOOL_REGISTRY:
+            if not _subagent_enabled(name):
+                lines.append(f"- {name}: ❌ 已禁用 (subagents.{name}.enabled=false)")
+                continue
+            tool_obj = dict(self._TOOL_REGISTRY)[name]
             try:
-                p = tool._policy()  # noqa: SLF001 - same module, intentional
+                p = tool_obj._policy()  # noqa: SLF001 - same module, intentional
             except Exception:  # noqa: BLE001
                 p = {}
             allowed = p.get("allowed_tools", ())
             steps = p.get("max_steps", "?")
             timeout = p.get("timeout", "?")
             discover = p.get("discover_web", False)
+            provider = p.get("provider_id") or "(沿用当前会话)"
             allowed_str = ", ".join(allowed) if allowed else "(空)"
             lines.append(
-                f"- {tool.name}: max_steps={steps}, timeout={timeout}s, "
-                f"discover_web={discover}"
+                f"- {name}: max_steps={steps}, timeout={timeout}s, "
+                f"discover_web={discover}, provider={provider}"
             )
             lines.append(f"    白名单: {allowed_str}")
         lines.append("")
