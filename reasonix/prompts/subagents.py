@@ -1,6 +1,6 @@
 """System prompts for explore / research / review / security_review."""
 
-from reasonix.prompts.fragments import (
+from ..prompts.fragments import (
     NEGATIVE_CLAIM_RULE,
     SECURITY_PATTERN_CHECKLIST,
     TUI_FORMATTING,

@@ -1,5 +1,5 @@
-from reasonix import tasks
-from reasonix.constants import MAX_PASTED_DIFF_CHARS
+from astrbot_plugin_reasonix_subagents.reasonix import tasks
+from astrbot_plugin_reasonix_subagents.reasonix.constants import MAX_PASTED_DIFF_CHARS
 
 
 def test_task_schema_shape():

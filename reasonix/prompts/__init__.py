@@ -1,15 +1,15 @@
 """Prompt library for the subagents (ported from DeepSeek-Reasonix, MIT)."""
 
-from reasonix.prompts.deep_review import (
+from ..prompts.deep_review import (
     DEEP_REVIEW_AGGREGATOR_PROMPT,
     DEEP_REVIEW_SPECIALISTS,
 )
-from reasonix.prompts.fragments import (
+from ..prompts.fragments import (
     NEGATIVE_CLAIM_RULE,
     SECURITY_PATTERN_CHECKLIST,
     TUI_FORMATTING,
 )
-from reasonix.prompts.subagents import (
+from ..prompts.subagents import (
     EXPLORE_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,

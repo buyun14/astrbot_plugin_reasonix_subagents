@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from reasonix.constants import MAX_PASTED_DIFF_CHARS
+from .constants import MAX_PASTED_DIFF_CHARS
 
 
 def task_parameters(task_hint: str) -> dict:

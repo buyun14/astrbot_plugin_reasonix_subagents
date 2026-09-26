@@ -14,9 +14,9 @@ import logging
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
-from reasonix.config import ConfigHolder, subagent_enabled
-from reasonix.policy import SPECS, SPEC_ORDER, resolve_policy
-from reasonix.tools.agents import build_tools
+from .reasonix.config import ConfigHolder, subagent_enabled
+from .reasonix.policy import SPECS, SPEC_ORDER, resolve_policy
+from .reasonix.tools.agents import build_tools
 
 logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
 

@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
-from reasonix.discovery import discover_web_tools, is_web_readonly_tool
+from astrbot_plugin_reasonix_subagents.reasonix.discovery import (
+    discover_web_tools,
+    is_web_readonly_tool,
+)
 
 
 @dataclass
