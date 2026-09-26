@@ -9,6 +9,8 @@
 - 本地迁移资产文档（可选阅读）：
   `E:\ProjectCollection\AI_sandbox\docs_person\DeepSeek-Reasonix子代理迁移资产\`
 
+当前版本见 `metadata.yaml`，改动历史见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 它提供了什么
 
 注册到主 LLM 的 4 个“委派工具”（agent-as-tool）：
@@ -86,6 +88,10 @@ uv run ruff format data/plugins/astrbot_plugin_reasonix_subagents
 
 - [ ] 把本目录放进**独立 GitHub 仓库**（建议命名为 `astrbot_plugin_reasonix_subagents`，metadata.yaml 在仓库根目录）。
 - [ ] `metadata.yaml`：把 `author` 改为你的发布者名/GitHub 用户名，把 `repo` 填为真实 HTTPS 仓库地址（仓库地址用于更新，缺失将无法更新）。
+- [ ] 发布前更新 `metadata.yaml` 的 `version`（语义化版本）与 `CHANGELOG.md`；
+      三者要一致：`metadata.yaml.version` = git tag = 市场记录 `version`。
+      注意插件身份 `plugin_id = author/name`（当前 `buyun14/astrbot_plugin_reasonix_subagents`），
+      发布后不要改 `author` / `name`，否则会被市场视为新插件。
 - [ ] 压缩包 ≤ 16MB；不要把 `.git/`、`__pycache__/`、`.venv/`、`.ruff_cache/` 等提交进仓库（见 `.gitignore`）。
 - [ ] （可选）添加 `logo.png`（1:1，256x256）；补充 `social_link`。
 - [ ] 仅用 AstrBot 自带依赖（pydantic 等），无需 `requirements.txt`；若以后引入第三方库需补 `requirements.txt`。

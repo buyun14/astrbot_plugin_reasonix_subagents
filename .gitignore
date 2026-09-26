@@ -12,6 +12,9 @@ dist/
 .mypy_cache/
 .pytest_cache/
 
+# Local runtime artifacts (AstrBot data dir created when running tests from here)
+data/
+
 # OS / editor
 .DS_Store
 Thumbs.db
