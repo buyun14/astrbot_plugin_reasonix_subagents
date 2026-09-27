@@ -4,6 +4,12 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.1] - 2026-09-27
+
+### 修复 (Fixed)
+
+- 日志改用 `from astrbot.api import logger`，移除内置 `logging` 模块（`main.py`、`reasonix/runner.py`、`reasonix/tools/base.py`）；按插件市场发布规范，插件日志记录器只能来自 `astrbot.api`。
+
 ## [0.4.0] - 2026-09-27
 
 ### 新增 (Added)
