@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+from astrbot.api import logger
 from astrbot.core.agent.tool import ToolSet
-
-logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
 
 
 async def resolve_provider_id(ctx: Any, event: Any, override: str) -> str:

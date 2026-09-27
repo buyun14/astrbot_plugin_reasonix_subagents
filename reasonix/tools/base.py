@@ -6,12 +6,12 @@ only the final text. Policy is resolved exactly once per call.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass
 
+from astrbot.api import logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
@@ -21,8 +21,6 @@ from ..config import ConfigHolder
 from ..discovery import discover_web_tools
 from ..policy import AgentSpec, Policy, resolve_policy
 from ..runner import resolve_provider_id, run_agent
-
-logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
 
 
 def _get_tool_manager(ctx: Any) -> Any:

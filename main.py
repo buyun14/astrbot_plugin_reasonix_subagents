@@ -9,16 +9,13 @@ package. Unlike the old single-file design, tool instances are created here
 
 from __future__ import annotations
 
-import logging
-
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 
 from .reasonix.config import ConfigHolder, subagent_enabled
 from .reasonix.policy import SPECS, SPEC_ORDER, resolve_policy
 from .reasonix.tools.agents import build_tools
-
-logger = logging.getLogger("astrbot_plugin_reasonix_subagents")
 
 
 class ReasonixSubagentsPlugin(Star):
